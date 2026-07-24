@@ -3,7 +3,13 @@ import { BlobReader, BlobWriter, ZipWriter } from "@zip.js/zip.js"
 import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { inspectRelease, parseChecksumManifest, releaseTarget, smokeBinary } from "../../script/verify-release"
+import {
+  inspectRelease,
+  parseChecksumManifest,
+  releaseTarget,
+  smokeBinary,
+  verifyResAgentHelp,
+} from "../../script/verify-release"
 
 const directories: string[] = []
 
@@ -57,6 +63,17 @@ describe("ResAgent release verifier", () => {
   test("runs a binary and verifies its exact version", async () => {
     await expect(smokeBinary(process.execPath, Bun.version)).resolves.toBe(Bun.version)
     await expect(smokeBinary(process.execPath, "not-the-bun-version")).rejects.toThrow("!=")
+  })
+
+  test("requires ResAgent command names in packaged help", () => {
+    expect(() => verifyResAgentHelp("resagent research [question..]\nresagent doctor\n")).not.toThrow()
+    expect(() => verifyResAgentHelp("opencode research [question..]\n")).toThrow("resagent command name")
+    expect(() => verifyResAgentHelp("resagent research [question..]\nopencode research [question..]\n")).toThrow(
+      "leaks the opencode command name",
+    )
+    expect(() =>
+      verifyResAgentHelp("  resagent serve  start opencode server\nresagent research [question..]\n"),
+    ).toThrow("command summary leaks")
   })
 })
 

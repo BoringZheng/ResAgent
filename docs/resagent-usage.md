@@ -17,9 +17,8 @@ resagent auth list               List stored provider credentials
 resagent research <question>     Run the five-stage research workflow
 ```
 
-The distribution is named ResAgent, but some inherited OpenCode help text or internal paths may
-still use the `opencode` name. The expected configuration filenames also remain
-`opencode.json[c]`. Invoke the installed executable as `resagent`.
+The distribution, executable, CLI help, and commands use the ResAgent name. Internal paths and
+the expected configuration filenames remain `opencode.json[c]` for compatibility.
 
 ## Research From The CLI
 

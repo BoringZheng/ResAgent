@@ -53,8 +53,8 @@ decision and link to that procedure instead of copying it.
 
 The product and installed executable are named **ResAgent** and `resagent`. The codebase keeps
 OpenCode-compatible configuration paths, environment variables, package names, generated SDK
-names, and some inherited help text. These names are compatibility details, not separate
-ResAgent installation channels.
+names, and internal implementation text. These names are compatibility details, not separate
+ResAgent installation channels. Standalone CLI help and commands use `resagent`.
 
 The expected configuration filenames remain `opencode.json[c]`, and the inherited schema URL
 remains `https://opencode.ai/config.json`. Do not rename them in documentation unless the

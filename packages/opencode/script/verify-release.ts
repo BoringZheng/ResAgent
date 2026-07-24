@@ -103,13 +103,32 @@ export async function smokeBinary(binary: string, expectedVersion: string) {
   return version
 }
 
+export async function smokeResAgentBinary(binary: string, expectedVersion: string) {
+  const version = await smokeBinary(binary, expectedVersion)
+  const help = await runCombined([binary, "--help"], 15_000)
+  verifyResAgentHelp(help)
+  return version
+}
+
+export function verifyResAgentHelp(help: string) {
+  if (!help.includes("resagent research")) {
+    throw new Error("Extracted binary help does not use the resagent command name")
+  }
+  if (help.includes("opencode research")) {
+    throw new Error("Extracted binary help leaks the opencode command name")
+  }
+  if (help.split(/\r?\n/).some((line) => /^\s+resagent\b.*\bopencode\b/i.test(line))) {
+    throw new Error("Extracted binary command summary leaks the opencode product name")
+  }
+}
+
 export async function verifyRelease(input?: {
   readonly dist?: string
   readonly platform?: SupportedPlatform
   readonly arch?: SupportedArch
 }) {
   const inspected = await inspectRelease(input)
-  const version = await smokeBinary(inspected.binary, inspected.version).finally(inspected.cleanup)
+  const version = await smokeResAgentBinary(inspected.binary, inspected.version).finally(inspected.cleanup)
   return { ...inspected, version, cleanup: undefined }
 }
 
@@ -149,6 +168,15 @@ async function inspectTar(archive: string, directory: string, binaryName: string
 }
 
 async function run(command: string[], timeoutMs = 30_000) {
+  return (await execute(command, timeoutMs)).stdout
+}
+
+async function runCombined(command: string[], timeoutMs = 30_000) {
+  const result = await execute(command, timeoutMs)
+  return result.stdout + result.stderr
+}
+
+async function execute(command: string[], timeoutMs: number) {
   const child = Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
   const timeout = { expired: false }
   const timer = setTimeout(() => {
@@ -162,7 +190,7 @@ async function run(command: string[], timeoutMs = 30_000) {
   ]).finally(() => clearTimeout(timer))
   if (timeout.expired) throw new Error(`${command.join(" ")} timed out after ${timeoutMs}ms`)
   if (exitCode !== 0) throw new Error(`${command.join(" ")} exited ${exitCode}: ${stderr.trim()}`)
-  return stdout
+  return { stdout, stderr }
 }
 
 function requirePlatform(platform: NodeJS.Platform): SupportedPlatform {

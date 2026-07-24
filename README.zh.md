@@ -198,7 +198,7 @@ bun run verify:resagent-release
 - 不支持 macOS。
 - 原生发行版当前只面向 Windows x64 和 Linux x64。
 - Research Profile 和远程清单继续使用继承的 `opencode.json[c]` 路径；Schema URL 和内部 `@opencode-ai/*` 包名为了兼容性保持不变。
-- 少量继承的 CLI 帮助或内部实现文本仍可能显示 `opencode`；独立发行版应使用 `resagent` 调用。
+- 内部实现文本和兼容路径仍可能使用 `opencode`；独立发行版的 CLI 帮助与命令统一使用 `resagent`。
 - 远程执行只使用 OpenSSH。密码认证、WinRM、Kubernetes 和任意长期远程后台任务不在当前范围内。
 - 权限 UI 不会沙箱化本地进程，也不会让已批准的命令自动变得安全。
 - 分支 CI Artifact 保存 14 天；Tag Release 才是长期发行渠道。

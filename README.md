@@ -230,8 +230,8 @@ remote behavior, or release automation.
 - Native distribution currently targets Windows x64 and Linux x64 only.
 - Research profiles and remote inventory are configured in inherited `opencode.json[c]` paths;
   the schema URL and internal `@opencode-ai/*` package names remain upstream-compatible.
-- Some inherited CLI help or internal implementation text may still say `opencode`; invoke the
-  standalone distribution as `resagent`.
+- Internal implementation text and compatibility paths may still use `opencode`; standalone CLI
+  help and commands use `resagent`.
 - Remote execution uses OpenSSH only. Password authentication, WinRM, Kubernetes, and arbitrary
   long-lived remote jobs are outside the current scope.
 - The permission UI does not sandbox the local process or make an approved command harmless.
