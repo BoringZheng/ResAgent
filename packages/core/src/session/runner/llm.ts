@@ -210,12 +210,23 @@ const layer = Layer.effect(
         initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
-      const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
-      const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
-      const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const research = yield* researchRuns.current(session.id)
       const researchStage =
         research?.status === "active" && research.stage?.status === "active" ? research.stage : undefined
+      const maxSteps = researchStage ? Math.min(agent.info?.steps ?? 6, 6) : agent.info?.steps
+      const isLastStep = maxSteps !== undefined && currentStep >= maxSteps
+      const permissions = researchStage
+        ? researchStage.stage === "collect"
+          ? PermissionV2.merge(agent.info?.permissions ?? [], [
+              { action: "question", resource: "*", effect: "deny" },
+              { action: "todowrite", resource: "*", effect: "deny" },
+              { action: "plan_enter", resource: "*", effect: "deny" },
+              { action: "plan_exit", resource: "*", effect: "deny" },
+            ])
+          : PermissionV2.merge(agent.info?.permissions ?? [], [{ action: "*", resource: "*", effect: "deny" }])
+        : agent.info?.permissions
+      const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(permissions)
+      const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const routed = researchStage
         ? yield* researchRoutes.candidates(researchStage.route.map((entry) => ConfigResearch.RouteEntry.make(entry)))
         : undefined

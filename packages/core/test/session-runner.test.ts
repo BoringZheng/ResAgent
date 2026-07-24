@@ -3268,6 +3268,121 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("advertises no tools outside the research collect stage", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Plan without tools",
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Plan the work" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+
+      requests.length = 0
+      response = fragmentFixture("text", "research-plan-no-tools", ["Plan"]).completeEvents
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.tools).toEqual([])
+      expect(requests[0]?.toolChoice).toBeUndefined()
+      yield* research.fail({ sessionID, runID: run.id, message: "test cleanup" })
+    }),
+  )
+
+  it.effect("caps collect at six provider turns and forces a final text response", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Bound evidence collection",
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Plan evidence collection" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+      response = fragmentFixture("text", "research-collect-plan", ["Plan"]).completeEvents
+      yield* session.resume(sessionID)
+      const plan = (yield* session.context(sessionID)).findLast(
+        (message): message is SessionMessage.Assistant => message.type === "assistant",
+      )!
+      yield* research.completeStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        messageID: plan.id,
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "collect",
+        role: "collector",
+        route: ["research-primary/primary"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Collect evidence" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+
+      requests.length = 0
+      executions.length = 0
+      responses = [
+        ...Array.from({ length: 5 }, (_, index) => [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({
+            id: `call-research-collect-${index}`,
+            name: "echo",
+            input: { text: `evidence-${index}` },
+          }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" as const }),
+          LLMEvent.finish({ reason: "tool-calls" as const }),
+        ]),
+        fragmentFixture("text", "research-collect-final", ["Evidence summary"]).completeEvents,
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(6)
+      expect(requests[0]?.tools.map((tool) => tool.name)).toEqual(["echo", "defect"])
+      expect(requests[4]?.toolChoice).toBeUndefined()
+      expect(requests[5]?.tools).toEqual([])
+      expect(requests[5]?.toolChoice).toMatchObject({ type: "none" })
+      expect(requests[5]?.messages.at(-1)).toMatchObject({
+        role: "assistant",
+        content: [{ type: "text", text: expect.stringContaining("MAXIMUM STEPS REACHED") }],
+      })
+      expect(executions).toEqual(["evidence-0", "evidence-1", "evidence-2", "evidence-3", "evidence-4"])
+      yield* research.fail({ sessionID, runID: run.id, message: "test cleanup" })
+    }),
+  )
+
   it.effect("resets a research route to the primary for a tool-driven continuation", () =>
     Effect.gen(function* () {
       yield* setup
@@ -3283,6 +3398,30 @@ describe("SessionRunnerLLM", () => {
         runID: run.id,
         stage: "plan",
         role: "planner",
+        route: ["research-primary/primary"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Plan the continuation" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+      response = fragmentFixture("text", "research-continuation-plan", ["Plan"]).completeEvents
+      yield* session.resume(sessionID)
+      const plan = (yield* session.context(sessionID)).findLast(
+        (message): message is SessionMessage.Assistant => message.type === "assistant",
+      )!
+      yield* research.completeStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        messageID: plan.id,
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "collect",
+        role: "collector",
         route: ["research-primary/primary", "research-backup/backup"],
       })
       yield* session.prompt({

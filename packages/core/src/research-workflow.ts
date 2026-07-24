@@ -111,7 +111,7 @@ export function prompt(stage: ResearchRun.Stage, question: string) {
   const instructions = {
     plan: "Produce a concise research plan with subquestions, evidence requirements, and target source types.",
     collect:
-      "Collect evidence using available tools. Preserve source URLs, file paths, remote host aliases, commands, and important output details.",
+      "Collect evidence using available tools. Preserve source URLs, file paths, remote host aliases, commands, and important output details. Stop using tools once you have sufficient evidence and return the evidence summary.",
     analyze:
       "Analyze the collected evidence, normalize comparable facts, and identify material conflicts or uncertainty.",
     verify:
@@ -119,7 +119,7 @@ export function prompt(stage: ResearchRun.Stage, question: string) {
     report:
       "Write the final Markdown report with conclusions, citations, confidence notes, limitations, and no surrounding code fence.",
   } satisfies Record<ResearchRun.Stage, string>
-  return `[ResAgent research stage: ${stage}]\n\nResearch question:\n${question}\n\n${instructions[stage]}`
+  return `[ResAgent research stage: ${stage}]\n\nResearch question:\n${question}\n\nComplete this stage autonomously. Do not ask the user questions or wait for user input.\n\n${instructions[stage]}`
 }
 
 export function render(input: {

@@ -71,6 +71,8 @@ const assistant = (id: string, providerID: string, modelID: string, text: string
 describe("ResearchWorkflow", () => {
   test("builds stage-specific prompts", () => {
     expect(ResearchWorkflow.prompt("plan", "Why?")).toContain("research plan")
+    expect(ResearchWorkflow.prompt("plan", "Why?")).toContain("Do not ask the user questions")
+    expect(ResearchWorkflow.prompt("collect", "Why?")).toContain("Stop using tools once you have sufficient evidence")
     expect(ResearchWorkflow.prompt("verify", "Why?")).toContain("Challenge unsupported claims")
     expect(ResearchWorkflow.prompt("report", "Why?")).toContain("final Markdown report")
   })

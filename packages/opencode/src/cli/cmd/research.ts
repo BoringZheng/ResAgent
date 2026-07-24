@@ -17,6 +17,15 @@ export function resolveQuestion(positional: ReadonlyArray<string>, piped?: strin
     .trim()
 }
 
+export function formatToolProgress(tool: string, input: unknown) {
+  if (tool !== "remote_run") return `tool · ${tool}`
+  const hosts =
+    typeof input === "object" && input !== null && "hosts" in input
+      ? (input as { readonly hosts?: unknown }).hosts
+      : undefined
+  return `remote · ${Array.isArray(hosts) ? hosts.filter((host) => typeof host === "string").join(", ") : "configured targets"}`
+}
+
 export const ResearchCommand = effectCmd({
   command: "research [question..]",
   describe: "run a durable multi-provider research workflow",
@@ -84,16 +93,13 @@ export const ResearchCommand = effectCmd({
         Stream.filter((event) => event.data.sessionID === selected.id),
         Stream.map((event) => `provider ${event.data.attempt} · ${event.data.entry}`),
       )
-      const remoteCalls = events.subscribe(SessionEvent.Tool.Called).pipe(
-        Stream.filter((event) => event.data.sessionID === selected.id && event.data.tool === "remote_run"),
-        Stream.map((event) => {
-          const hosts = event.data.input.hosts
-          return `remote · ${Array.isArray(hosts) ? hosts.filter((host) => typeof host === "string").join(", ") : "configured targets"}`
-        }),
+      const toolCalls = events.subscribe(SessionEvent.Tool.Called).pipe(
+        Stream.filter((event) => event.data.sessionID === selected.id),
+        Stream.map((event) => formatToolProgress(event.data.tool, event.data.input)),
       )
       const progress = Stream.merge(started, stages).pipe(
         Stream.merge(attempts),
-        Stream.merge(remoteCalls),
+        Stream.merge(toolCalls),
         Stream.runForEach((line) => Effect.sync(() => UI.println(UI.Style.TEXT_DIM + line + UI.Style.TEXT_NORMAL))),
       )
       const progressFiber = yield* Effect.forkScoped(progress)
