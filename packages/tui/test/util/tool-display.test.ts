@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { toolDisplayMetadata, webSearchProviderLabel } from "../../src/util/tool-display"
+import { toolDisplay } from "../../src/routes/session"
 
 describe("webSearchProviderLabel", () => {
   test("labels known providers", () => {
@@ -37,4 +38,8 @@ describe("toolDisplayMetadata", () => {
     expect(toolDisplayMetadata({ status: "completed", structured: [] })).toEqual({})
     expect(toolDisplayMetadata(undefined)).toEqual({})
   })
+})
+
+test("remote_run has a dedicated tool display", () => {
+  expect(toolDisplay("remote_run")).toBe("remote_run")
 })

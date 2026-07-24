@@ -29,12 +29,16 @@ import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
+import { ResearchCommand } from "./cli/cmd/research"
+import { DoctorCommand } from "./cli/cmd/doctor"
+import { commandName } from "./cli/brand"
 
 const args = hideBin(process.argv)
+const name = commandName()
 
 function show(out: string) {
   const text = out.trimStart()
-  if (!text.startsWith("opencode ")) {
+  if (!text.startsWith(`${name} `)) {
     process.stderr.write(UI.logo() + EOL + EOL)
     process.stderr.write(text + EOL)
     return
@@ -44,7 +48,7 @@ function show(out: string) {
 
 const cli = yargs(args)
   .parserConfiguration({ "populate--": true })
-  .scriptName("opencode")
+  .scriptName(name)
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")
@@ -83,6 +87,8 @@ const cli = yargs(args)
   .command(TuiThreadCommand)
   .command(AttachCommand)
   .command(RunCommand)
+  .command(ResearchCommand)
+  .command(DoctorCommand)
   .command(GenerateCommand)
   .command(DebugCommand)
   .command(ConsoleCommand)

@@ -139,6 +139,7 @@ describe("PublicApi OpenAPI v2 errors", () => {
 
     for (const path of [
       "/api/session/{sessionID}/prompt",
+      "/api/session/{sessionID}/research",
       "/api/session/{sessionID}/permission/{requestID}/reply",
       "/api/session/{sessionID}/question/{requestID}/reply",
     ]) {

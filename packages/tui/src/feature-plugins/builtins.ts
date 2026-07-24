@@ -1,11 +1,15 @@
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
 import HomeFooter from "./home/footer"
 import HomeTips from "./home/tips"
+import RemoteCommands from "./remote/commands"
+import ResearchCommands from "./research/commands"
 import SidebarContext from "./sidebar/context"
 import SidebarFiles from "./sidebar/files"
 import SidebarFooter from "./sidebar/footer"
 import SidebarLsp from "./sidebar/lsp"
 import SidebarMcp from "./sidebar/mcp"
+import SidebarRemote from "./sidebar/remote"
+import SidebarResearch from "./sidebar/research"
 import SidebarTodo from "./sidebar/todo"
 import DiffViewer from "./system/diff-viewer"
 import Notifications from "./system/notifications"
@@ -22,9 +26,13 @@ export function createBuiltinPlugins(options: { experimentalEventSystem: boolean
   return [
     HomeFooter,
     HomeTips,
+    ResearchCommands,
+    RemoteCommands,
     SidebarContext,
     SidebarMcp,
     SidebarLsp,
+    SidebarRemote,
+    SidebarResearch,
     SidebarTodo,
     SidebarFiles,
     SidebarFooter,

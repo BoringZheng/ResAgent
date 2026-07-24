@@ -6,6 +6,7 @@ import {
   Model,
   TransportReason,
   InvalidRequestReason,
+  AuthenticationReason,
   type LLMClientShape,
   type LLMRequest,
 } from "@opencode-ai/llm"
@@ -52,6 +53,8 @@ import { SystemContext } from "@opencode-ai/core/system-context"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
+import { ResearchRoute } from "@opencode-ai/core/research-route"
+import { ResearchRun } from "@opencode-ai/core/research-run"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Location } from "@opencode-ai/core/location"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -98,6 +101,16 @@ const client = Layer.succeed(
 )
 const model = Model.make({ id: "fake-model", provider: "fake", route: OpenAIChat.route })
 const replacementModel = Model.make({ id: "replacement", provider: "fake", route: OpenAIChat.route })
+const researchPrimaryModel = Model.make({
+  id: "primary-deployment",
+  provider: "research-primary",
+  route: OpenAIChat.route,
+})
+const researchBackupModel = Model.make({
+  id: "backup-deployment",
+  provider: "research-backup",
+  route: OpenAIChat.route,
+})
 const compactModel = Model.make({
   id: "compact",
   provider: "fake",
@@ -154,9 +167,26 @@ const echo = Layer.effectDiscard(
 const echoNode = makeLocationNode({ name: "test/session-runner-tools", layer: echo, deps: [ToolRegistry.node] })
 let modelResolveHook = Effect.void
 let currentModel = model
-const models = SessionRunnerModel.layerWith((session) =>
-  modelResolveHook.pipe(Effect.as(session.model?.id === "replacement" ? replacementModel : currentModel)),
+const models = SessionRunnerModel.layerWith(
+  (session) => modelResolveHook.pipe(Effect.as(session.model?.id === "replacement" ? replacementModel : currentModel)),
+  (ref) => Effect.succeed(ref.providerID === "research-backup" ? researchBackupModel : researchPrimaryModel),
 )
+const researchRoutes = Layer.mock(ResearchRoute.Service, {
+  list: () => Effect.succeed([]),
+  get: () => Effect.die("unused"),
+  route: () => Effect.die("unused"),
+  candidates: (entries) =>
+    Effect.succeed(
+      entries.map((entry, index) => {
+        const selected = ModelV2.parse(entry)
+        return {
+          index,
+          entry,
+          model: ModelV2.Info.empty(selected.providerID, selected.modelID),
+        }
+      }),
+    ),
+})
 const systemContextKey = SystemContext.Key.make("test/context")
 let systemBaseline = "Initial context"
 let systemRemoved = false
@@ -229,6 +259,7 @@ const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Snapshot.node, Snapshot.noopLayer],
   [LayerNodePlatform.llmClient, client],
   [SessionRunnerModel.node, models],
+  [ResearchRoute.node, researchRoutes],
   [SystemContextRegistry.node, systemContext],
   [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
   [SkillGuidance.node, skillGuidance],
@@ -265,6 +296,8 @@ const it = testEffect(
       ToolRegistry.toolsNode,
       echoNode,
       SessionRunnerModel.node,
+      ResearchRoute.node,
+      ResearchRun.node,
       SystemContextRegistry.node,
       SkillGuidance.node,
       ReferenceGuidance.node,
@@ -278,6 +311,7 @@ const it = testEffect(
       [LayerNodePlatform.llmClient, client],
       [PermissionV2.node, permission],
       [SessionRunnerModel.node, models],
+      [ResearchRoute.node, researchRoutes],
       [SystemContextRegistry.node, systemContext],
       [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
       [SkillGuidance.node, skillGuidance],
@@ -3089,6 +3123,439 @@ describe("SessionRunnerLLM", () => {
         { type: "user", text: "Fail before step" },
         { type: "assistant", finish: "error", error: { type: "unknown", message: "Provider unavailable" } },
       ])
+    }),
+  )
+
+  it.effect("falls back across a research route before assistant output starts", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Compare providers",
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary", "research-backup/backup"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Plan the research" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+
+      requests.length = 0
+      responses = [
+        [LLMEvent.providerError({ message: "temporarily unavailable", retryable: true })],
+        fragmentFixture("text", "research-fallback", ["Fallback succeeded"]).completeEvents,
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(requests.map((request) => String(request.model.provider))).toEqual(["research-primary", "research-backup"])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Plan the research" },
+        {
+          type: "assistant",
+          model: { providerID: "research-backup", id: "backup" },
+          content: [{ type: "text", text: "Fallback succeeded" }],
+        },
+      ])
+      expect((yield* research.current(sessionID))?.stage?.attempts).toMatchObject([
+        { entry: "research-primary/primary", attempt: 1, status: "retryable-failure", replaySafe: true },
+        { entry: "research-backup/backup", attempt: 2, status: "succeeded", replaySafe: false },
+      ])
+      yield* research.fail({ sessionID, runID: run.id, message: "test cleanup" })
+    }),
+  )
+
+  it.effect("resumes a durably settled retryable turn at the backup after restart", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Resume fallback after process loss",
+      })
+      const turnID = ResearchRun.TurnID.make("turn_restart")
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary", "research-backup/backup"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Continue the settled fallback" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+      yield* research.startAttempt({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        turnID,
+        entry: "research-primary/primary",
+        attempt: 1,
+      })
+      yield* research.settleAttempt({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        turnID,
+        entry: "research-primary/primary",
+        attempt: 1,
+        outcome: "retryable-failure",
+        replaySafe: true,
+      })
+      requests.length = 0
+      response = fragmentFixture("text", "research-restart-backup", ["Backup resumed"]).completeEvents
+
+      yield* session.resume(sessionID)
+
+      expect(requests.map((request) => String(request.model.provider))).toEqual(["research-backup"])
+      expect((yield* research.current(sessionID))?.stage?.attempts).toMatchObject([
+        { turnID, entry: "research-primary/primary", attempt: 1, status: "retryable-failure" },
+        { turnID, entry: "research-backup/backup", attempt: 2, status: "succeeded" },
+      ])
+      yield* research.fail({ sessionID, runID: run.id, message: "test cleanup" })
+    }),
+  )
+
+  it.effect("rejects unrelated prompts while a research run owns the session", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Keep stage input exclusive",
+      })
+
+      expect(
+        yield* session
+          .prompt({
+            sessionID,
+            prompt: Prompt.make({ text: "Unrelated input" }),
+            resume: false,
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({
+        _tag: "Session.ResearchActiveError",
+        sessionID,
+        runID: run.id,
+      })
+
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Owned input" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+      yield* research.fail({ sessionID, runID: run.id, message: "test cleanup" })
+    }),
+  )
+
+  it.effect("resets a research route to the primary for a tool-driven continuation", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Continue on the primary",
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary", "research-backup/backup"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Use a tool, then continue" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+
+      requests.length = 0
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({ id: "call-research-primary", name: "echo", input: { text: "primary" } }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        fragmentFixture("text", "research-primary-continuation", ["Continued"]).completeEvents,
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(requests.map((request) => String(request.model.provider))).toEqual([
+        "research-primary",
+        "research-primary",
+      ])
+      const attempts = (yield* research.current(sessionID))?.stage?.attempts ?? []
+      expect(attempts).toMatchObject([
+        { entry: "research-primary/primary", attempt: 1, status: "succeeded" },
+        { entry: "research-primary/primary", attempt: 1, status: "succeeded" },
+      ])
+      expect(attempts[0]?.turnID).not.toBe(attempts[1]?.turnID)
+      yield* research.fail({ sessionID, runID: run.id, message: "test cleanup" })
+    }),
+  )
+
+  it.effect("resets a research route to the primary after steering", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Steer the primary",
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary", "research-backup/backup"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Start research" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+      requests.length = 0
+      responses = [
+        fragmentFixture("text", "research-before-steer", ["Before"]).completeEvents,
+        fragmentFixture("text", "research-after-steer", ["After"]).completeEvents,
+      ]
+      streamGate = yield* Deferred.make<void>()
+      streamStarted = yield* Deferred.make<void>()
+
+      const active = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      yield* Deferred.await(streamStarted)
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Change the focus" }),
+        researchRunID: run.id,
+      })
+      yield* Deferred.succeed(streamGate, undefined)
+      yield* Fiber.join(active)
+      streamGate = undefined
+      streamStarted = undefined
+
+      expect(requests.map((request) => String(request.model.provider))).toEqual([
+        "research-primary",
+        "research-primary",
+      ])
+      yield* research.fail({ sessionID, runID: run.id, message: "test cleanup" })
+    }),
+  )
+
+  it.effect("restarts at the primary after a terminal authentication failure", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Do not route around authentication",
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary", "research-backup/backup"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Authenticate safely" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+      const authentication = new LLMError({
+        module: "test",
+        method: "stream",
+        reason: new AuthenticationReason({ message: "invalid key", kind: "invalid" }),
+      })
+      requests.length = 0
+      responseStream = Stream.fail(authentication)
+
+      expect(yield* session.resume(sessionID).pipe(Effect.flip)).toBe(authentication)
+      response = fragmentFixture("text", "research-after-auth", ["Recovered"]).completeEvents
+      yield* session.resume(sessionID)
+
+      expect(requests.map((request) => String(request.model.provider))).toEqual([
+        "research-primary",
+        "research-primary",
+      ])
+      expect((yield* research.current(sessionID))?.stage?.attempts).toMatchObject([
+        { entry: "research-primary/primary", attempt: 1, status: "terminal-failure" },
+        { entry: "research-primary/primary", attempt: 1, status: "succeeded" },
+      ])
+      yield* research.fail({ sessionID, runID: run.id, message: "test cleanup" })
+    }),
+  )
+
+  it.effect("restarts at the primary after partial output blocks fallback", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Retry a new turn safely",
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary", "research-backup/backup"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Keep partial output terminal" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+      requests.length = 0
+      response = [
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "research-partial-retry" }),
+        LLMEvent.textDelta({ id: "research-partial-retry", text: "Partial" }),
+        LLMEvent.textEnd({ id: "research-partial-retry" }),
+        LLMEvent.providerError({ message: "temporarily unavailable", retryable: true }),
+      ]
+
+      yield* session.resume(sessionID)
+      response = fragmentFixture("text", "research-after-partial", ["New turn"]).completeEvents
+      yield* session.resume(sessionID)
+
+      expect(requests.map((request) => String(request.model.provider))).toEqual([
+        "research-primary",
+        "research-primary",
+      ])
+      yield* research.fail({ sessionID, runID: run.id, message: "test cleanup" })
+    }),
+  )
+
+  it.effect("blocks automatic replay after an unsettled interrupted provider dispatch", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Do not replay an unknown dispatch",
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary", "research-backup/backup"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Interrupt after dispatch" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+      requests.length = 0
+      response = fragmentFixture("text", "research-never-completes", ["Unknown"]).completeEvents
+      streamGate = yield* Deferred.make<void>()
+      streamStarted = yield* Deferred.make<void>()
+
+      const active = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      yield* Deferred.await(streamStarted)
+      yield* session.interrupt(sessionID)
+      yield* Fiber.await(active)
+      streamGate = undefined
+      streamStarted = undefined
+
+      expect((yield* research.current(sessionID))?.stage?.attempts).toMatchObject([
+        { entry: "research-primary/primary", attempt: 1, status: "active" },
+      ])
+      expect(yield* session.resume(sessionID).pipe(Effect.flip)).toBeInstanceOf(ResearchRun.IndeterminateAttemptError)
+      expect(requests.map((request) => String(request.model.provider))).toEqual(["research-primary"])
+      yield* research.fail({ sessionID, runID: run.id, message: "manual recovery required" })
+    }),
+  )
+
+  it.effect("does not fall back after research assistant output starts", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const research = yield* ResearchRun.Service
+      const run = yield* research.start({
+        sessionID,
+        profile: "balanced" as never,
+        question: "Keep partial output",
+      })
+      yield* research.startStage({
+        sessionID,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["research-primary/primary", "research-backup/backup"],
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Plan without unsafe replay" }),
+        resume: false,
+        researchRunID: run.id,
+      })
+
+      requests.length = 0
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "research-partial" }),
+          LLMEvent.textDelta({ id: "research-partial", text: "Partial" }),
+          LLMEvent.textEnd({ id: "research-partial" }),
+          LLMEvent.providerError({ message: "temporarily unavailable", retryable: true }),
+        ],
+        fragmentFixture("text", "research-unsafe-fallback", ["Must not run"]).completeEvents,
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(requests.map((request) => String(request.model.provider))).toEqual(["research-primary"])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Plan without unsafe replay" },
+        {
+          type: "assistant",
+          finish: "error",
+          content: [{ type: "text", text: "Partial" }],
+        },
+      ])
+      expect((yield* research.current(sessionID))?.stage?.attempts).toMatchObject([
+        { entry: "research-primary/primary", attempt: 1, status: "terminal-failure", replaySafe: false },
+      ])
+      yield* research.fail({ sessionID, runID: run.id, message: "provider failed after output" })
     }),
   )
 

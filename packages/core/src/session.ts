@@ -37,6 +37,7 @@ import { SessionRevert } from "./session/revert"
 import { Revert } from "@opencode-ai/schema/revert"
 import { FSUtil } from "./fs-util"
 import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
+import { ResearchRun } from "./research-run"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -105,10 +106,25 @@ export class PromptConflictError extends Schema.TaggedErrorClass<PromptConflictE
   sessionID: SessionSchema.ID,
   messageID: SessionMessage.ID,
 }) {}
+
+export class ResearchActiveError extends Schema.TaggedErrorClass<ResearchActiveError>()("Session.ResearchActiveError", {
+  sessionID: SessionSchema.ID,
+  runID: ResearchRun.ID,
+}) {
+  override get message() {
+    return `Research run ${this.runID} owns session ${this.sessionID}; unrelated prompts are blocked until it finishes`
+  }
+}
 export const MessageNotFoundError = SessionRevert.MessageNotFoundError
 export type MessageNotFoundError = SessionRevert.MessageNotFoundError
 
-export type Error = NotFoundError | MessageDecodeError | OperationUnavailableError | PromptConflictError
+export type Error =
+  | NotFoundError
+  | MessageDecodeError
+  | OperationUnavailableError
+  | PromptConflictError
+  | ResearchActiveError
+  | ResearchRun.InvalidHistoryError
 
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<SessionSchema.Info[]>
@@ -150,7 +166,11 @@ export interface Interface {
     prompt: PromptInput.Prompt
     delivery?: SessionInput.Delivery
     resume?: boolean
-  }) => Effect.Effect<SessionInput.Admitted, NotFoundError | PromptConflictError>
+    researchRunID?: ResearchRun.ID
+  }) => Effect.Effect<
+    SessionInput.Admitted,
+    NotFoundError | PromptConflictError | ResearchActiveError | ResearchRun.InvalidHistoryError
+  >
   readonly shell: (input: {
     id?: EventV2.ID
     sessionID: SessionSchema.ID
@@ -189,6 +209,7 @@ const layer = Layer.effect(
     const events = yield* EventV2.Service
     const projects = yield* ProjectV2.Service
     const execution = yield* SessionExecution.Service
+    const research = yield* ResearchRun.Service
     const store = yield* SessionStore.Service
     const locations = yield* LocationServiceMap.Service
     const decodeMessage = Schema.decodeUnknownEffect(SessionMessage.Message)
@@ -361,6 +382,12 @@ const layer = Layer.effect(
         Effect.uninterruptible(
           Effect.gen(function* () {
             yield* result.get(input.sessionID)
+            const activeResearch = yield* research.current(input.sessionID)
+            if (activeResearch?.status === "active" && input.researchRunID !== activeResearch.id)
+              return yield* new ResearchActiveError({
+                sessionID: input.sessionID,
+                runID: activeResearch.id,
+              })
             const prompt = resolvePrompt(input.prompt)
             const messageID = input.id ?? SessionMessage.ID.create()
             const delivery = input.delivery ?? "steer"
@@ -482,5 +509,6 @@ export const node = makeGlobalNode({
     SessionStore.node,
     LocationServiceMap.node,
     SessionProjector.node,
+    ResearchRun.node,
   ],
 })

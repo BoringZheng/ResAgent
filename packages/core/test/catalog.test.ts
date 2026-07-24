@@ -11,6 +11,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { Policy } from "@opencode-ai/core/policy"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
@@ -28,6 +29,19 @@ const catalogLayer = AppNodeBuilder.build(
   [[Location.node, locationLayer]],
 )
 const it = testEffect(catalogLayer)
+const resolverIt = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([
+      SessionRunnerModel.node,
+      Catalog.node,
+      EventV2.node,
+      Credential.node,
+      Integration.node,
+      Policy.node,
+    ]),
+    [[Location.node, locationLayer]],
+  ),
+)
 
 describe("CatalogV2", () => {
   it.effect("publishes an updated event after catalog changes", () =>
@@ -100,6 +114,60 @@ describe("CatalogV2", () => {
       expect((yield* catalog.provider.available()).map((provider) => provider.id)).toEqual([providerID])
     }).pipe(Effect.provide(localCatalogLayer))
   })
+
+  it.effect("derives availability from an API settings key", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const providerID = ProviderV2.ID.make("configured")
+      yield* catalog.transform((editor) =>
+        editor.provider.update(providerID, (provider) => {
+          provider.api = {
+            type: "aisdk",
+            package: "@ai-sdk/openai-compatible",
+            url: "https://configured.example/v1",
+            settings: { apiKey: "secret" },
+          }
+        }),
+      )
+
+      expect((yield* catalog.provider.available()).map((provider) => provider.id)).toContain(providerID)
+    }),
+  )
+
+  resolverIt.effect("resolves a configured catalog model through the production location layer", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const resolver = yield* SessionRunnerModel.Service
+      const providerID = ProviderV2.ID.make("configured")
+      const modelID = ModelV2.ID.make("chat")
+      yield* catalog.transform((editor) => {
+        editor.provider.update(providerID, (provider) => {
+          provider.api = {
+            type: "aisdk",
+            package: "@ai-sdk/openai-compatible",
+            url: "https://configured.example/v1",
+            settings: { apiKey: "secret" },
+          }
+        })
+        editor.model.update(providerID, modelID, (model) => {
+          model.capabilities.input = ["text"]
+          model.capabilities.output = ["text"]
+        })
+      })
+
+      const resolved = yield* resolver.resolveRef({ providerID, id: modelID })
+
+      expect(resolved.ref).toEqual({ providerID, id: modelID, variant: undefined })
+      expect(resolved.model).toMatchObject({
+        id: modelID,
+        provider: providerID,
+        route: {
+          id: "openai-compatible-chat",
+          endpoint: { baseURL: "https://configured.example/v1" },
+        },
+      })
+    }),
+  )
 
   it.effect("projects environment connections without a catalog plugin", () =>
     Effect.acquireUseRelease(

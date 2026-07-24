@@ -20,11 +20,14 @@ import { ConfigLSP } from "./config/lsp"
 import { ConfigMCP } from "./config/mcp"
 import { ConfigPlugin } from "./config/plugin"
 import { ConfigProvider } from "./config/provider"
+import { ConfigResearch } from "./config/research"
+import { ConfigRemote } from "./config/remote"
 import { ConfigReference } from "./config/reference"
 import { ConfigToolOutput } from "./config/tool-output"
 import { ConfigWatcher } from "./config/watcher"
 import { ConfigV1 } from "./v1/config/config"
 import { ConfigMigrateV1 } from "./v1/config/migrate"
+import { Flag } from "./flag/flag"
 
 export class Info extends Schema.Class<Info>("Config.Info")({
   $schema: Schema.optional(Schema.String).annotate({
@@ -104,6 +107,12 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   }),
   experimental: ConfigExperimental.Experimental.pipe(Schema.optional),
   providers: Schema.Record(Schema.String, ConfigProvider.Info).pipe(Schema.optional),
+  research: ConfigResearch.Info.pipe(Schema.optional).annotate({
+    description: "Research workflow profiles and ordered provider routes",
+  }),
+  remotes: ConfigRemote.Info.pipe(Schema.optional).annotate({
+    description: "Named SSH hosts available to remote execution tools",
+  }),
 }) {}
 
 export class Document extends Schema.Class<Document>("Config.Document")({
@@ -144,10 +153,7 @@ const layer = Layer.effect(
     const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
     const decodeV1Info = Schema.decodeUnknownOption(ConfigV1.Info, decodeOptions)
 
-    const loadFile = Effect.fnUntraced(function* (filepath: string) {
-      const text = yield* fs.readFileStringSafe(filepath)
-      if (!text) return
-
+    const loadContent = Effect.fnUntraced(function* (text: string, source?: string) {
       const errors: ParseError[] = []
       const input: unknown = parse(text, errors, { allowTrailingComma: true })
       if (errors.length) return
@@ -158,7 +164,13 @@ const layer = Layer.effect(
           : decodeInfo(input),
       )
       if (!info) return
-      return new Document({ type: "document", path: filepath, info })
+      return new Document({ type: "document", path: source, info })
+    })
+
+    const loadFile = Effect.fnUntraced(function* (filepath: string) {
+      const text = yield* fs.readFileStringSafe(filepath)
+      if (!text) return
+      return yield* loadContent(text, filepath)
     })
 
     const loadDirectory = Effect.fnUntraced(function* (directory: AbsolutePath) {
@@ -174,15 +186,16 @@ const layer = Layer.effect(
     const locationIsGlobal = path.resolve(location.directory) === path.resolve(global.config)
     // Read configuration once when this location opens. Later calls reuse these
     // values until the location is reopened.
-    const discovered = locationIsGlobal
-      ? []
-      : yield* fs
-          .up({
-            targets: [".opencode", ...names.toReversed()],
-            start: location.directory,
-            stop: location.project.directory,
-          })
-          .pipe(Effect.orDie)
+    const discovered =
+      locationIsGlobal || Flag.OPENCODE_DISABLE_PROJECT_CONFIG
+        ? []
+        : yield* fs
+            .up({
+              targets: [".opencode", ...names.toReversed()],
+              start: location.directory,
+              stop: location.project.directory,
+            })
+            .pipe(Effect.orDie)
     const directories = [
       globalDirectory,
       ...discovered
@@ -198,9 +211,21 @@ const layer = Layer.effect(
       Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
     )
     const supplementary = yield* Effect.forEach(directories, loadDirectory).pipe(Effect.orDie)
+    const explicit = Flag.OPENCODE_CONFIG
+      ? yield* loadFile(path.resolve(Flag.OPENCODE_CONFIG)).pipe(Effect.orDie)
+      : undefined
+    const inline = Flag.OPENCODE_CONFIG_CONTENT
+      ? yield* loadContent(Flag.OPENCODE_CONFIG_CONTENT, "OPENCODE_CONFIG_CONTENT")
+      : undefined
     // Apply general settings first and more specific settings last:
-    // global config, project files, then `.opencode` files.
-    const configs = [...(supplementary[0] ?? []), ...direct, ...supplementary.slice(1).flat()]
+    // global config, project files, `.opencode` files, explicit config, then inline content.
+    const configs = [
+      ...(supplementary[0] ?? []),
+      ...direct,
+      ...supplementary.slice(1).flat(),
+      ...(explicit ? [explicit] : []),
+      ...(inline ? [inline] : []),
+    ]
     // Rules use the opposite order so a user-global rule can override a
     // repository rule. Statement order inside each file stays unchanged.
     yield* policy.load(

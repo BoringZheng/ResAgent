@@ -1,10 +1,12 @@
 import { SessionV2 } from "@opencode-ai/core/session"
+import { ResearchWorkflow } from "@opencode-ai/core/research-workflow"
 import { DateTime, Effect, Stream } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { Api } from "../api"
 import { SessionsCursor } from "@opencode-ai/protocol/groups/session"
 import {
   ConflictError,
+  InvalidRequestError,
   InvalidCursorError,
   MessageNotFoundError,
   ServiceUnavailableError,
@@ -19,6 +21,7 @@ const DefaultSessionHistoryLimit = 50
 export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* SessionV2.Service
+    const research = yield* ResearchWorkflow.Service
 
     return handlers
       .handle(
@@ -165,6 +168,15 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                     }),
                   ),
                 ),
+                Effect.catchTag("Session.ResearchActiveError", (error) =>
+                  Effect.fail(
+                    new ConflictError({
+                      message: error.message,
+                      resource: error.runID,
+                    }),
+                  ),
+                ),
+                Effect.catchTag("ResearchRun.InvalidHistoryError", Effect.die),
               ),
           }
         }),
@@ -351,6 +363,51 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                     message: `Session not found: ${error.sessionID}`,
                   }),
               ),
+            )
+        }),
+      )
+      .handle(
+        "session.research",
+        Effect.fn(function* (ctx) {
+          return yield* research
+            .run({
+              sessionID: ctx.params.sessionID,
+              question: ctx.payload.question,
+              profile: ctx.payload.profile,
+              path: ctx.payload.path,
+            })
+            .pipe(
+              Effect.map((result) => ({
+                data: {
+                  runID: result.run.id,
+                  reportPath: result.path,
+                },
+              })),
+              Effect.mapError((error) => {
+                if (error instanceof SessionV2.NotFoundError)
+                  return new SessionNotFoundError({
+                    sessionID: error.sessionID,
+                    message: `Session not found: ${error.sessionID}`,
+                  })
+                if (
+                  error instanceof ResearchWorkflow.InvalidQuestionError ||
+                  error instanceof ResearchWorkflow.ExportPathError
+                )
+                  return new InvalidRequestError({ message: error.message })
+                if (
+                  error instanceof ResearchWorkflow.ActiveRunError ||
+                  error instanceof ResearchWorkflow.SessionBusyError ||
+                  error instanceof SessionV2.ResearchActiveError ||
+                  error instanceof SessionV2.PromptConflictError
+                )
+                  return new ConflictError({
+                    message: error.message,
+                    resource: ctx.params.sessionID,
+                  })
+                return new UnknownError({
+                  message: "Research workflow failed. Check server logs for details.",
+                })
+              }),
             )
         }),
       )

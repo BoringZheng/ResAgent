@@ -1,7 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Deferred, Effect, Layer } from "effect"
+import { Context, Deferred, Effect, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import { HttpServer } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process"
@@ -25,7 +25,7 @@ import path from "path"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { testProviderConfig } from "../lib/test-provider"
+import { testProvider, testProviderConfig } from "../lib/test-provider"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Database } from "@opencode-ai/core/database/database"
@@ -171,6 +171,12 @@ function array(value: unknown) {
   return Array.isArray(value) ? value : []
 }
 
+function researchEvents(history: Captured, type: string) {
+  return array(record(history.data).data)
+    .filter((event) => record(event).type === type)
+    .map((event) => record(record(event).data))
+}
+
 function statuses(input: Record<string, Captured>) {
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, value.status]))
 }
@@ -253,6 +259,44 @@ function withFakeLlm<A, E>(serverPath: ServerPath, run: (input: LlmProjectFixtur
     const llm = yield* TestLLMServer
     return yield* withProject(serverPath, { config: testProviderConfig(llm.url) }, (input) => run({ ...input, llm }))
   }).pipe(Effect.provide(TestLLMServer.layer))
+}
+
+function withResearchLlms<A, E>(
+  run: (
+    input: ProjectFixture & {
+      primary: TestLLMServer["Service"]
+      backup: TestLLMServer["Service"]
+    },
+  ) => Effect.Effect<A, E, TestScope>,
+) {
+  return Effect.gen(function* () {
+    const primary = Context.get(yield* Layer.build(Layer.fresh(TestLLMServer.layer)), TestLLMServer)
+    const backup = Context.get(yield* Layer.build(Layer.fresh(TestLLMServer.layer)), TestLLMServer)
+    return yield* withProject(
+      "raw",
+      {
+        config: {
+          provider: {
+            primary: testProvider("primary", primary.url, "primary-model"),
+            backup: testProvider("backup", backup.url, "backup-model"),
+          },
+          research: {
+            default_profile: "balanced",
+            profiles: {
+              balanced: {
+                planner: ["primary/primary-model", "backup/backup-model"],
+                collector: ["primary/primary-model", "backup/backup-model"],
+                analyst: ["primary/primary-model", "backup/backup-model"],
+                verifier: ["primary/primary-model", "backup/backup-model"],
+                writer: ["primary/primary-model", "backup/backup-model"],
+              },
+            },
+          },
+        },
+      },
+      (input) => run({ ...input, primary, backup }),
+    )
+  })
 }
 
 function withFakeLlmProject<A, E>(
@@ -830,6 +874,351 @@ describe("HttpApi SDK", () => {
         expect(session.status).toBe(200)
         expect(prompt.status).toBe(200)
         expect(JSON.stringify(inputs[0])).toContain("project-rest-skill")
+      }),
+    ),
+  )
+
+  httpapi(
+    "runs the five-stage research workflow through the generated SDK",
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      yield* llm.text("Plan")
+      yield* llm.text("Evidence")
+      yield* llm.text("Analysis")
+      yield* llm.text("Verification")
+      yield* llm.text(
+        [
+          "# HTTP report",
+          "",
+          "## Conclusion",
+          "",
+          "Verified over the research endpoint [1].",
+          "",
+          "## Confidence",
+          "",
+          "High confidence within the local fixture.",
+          "",
+          "## Limitations",
+          "",
+          "This result covers the fixture transport only.",
+          "",
+          "## References",
+          "",
+          "1. https://fixture.invalid/evidence",
+        ].join("\n"),
+      )
+      return yield* withProject(
+        "raw",
+        {
+          config: {
+            ...testProviderConfig(llm.url),
+            research: {
+              default_profile: "balanced",
+              profiles: {
+                balanced: {
+                  planner: ["test/test-model"],
+                  collector: ["test/test-model"],
+                  analyst: ["test/test-model"],
+                  verifier: ["test/test-model"],
+                  writer: ["test/test-model"],
+                },
+              },
+            },
+          },
+        },
+        ({ sdk, directory }) =>
+          Effect.gen(function* () {
+            const session = yield* capture(() => sdk.v2.session.create({ location: { directory } }))
+            const sessionID = String(record(record(session.data).data).id)
+            const research = yield* capture(() =>
+              sdk.v2.session.research({
+                sessionID,
+                question: "Compare the fixture evidence",
+                profile: "balanced",
+                path: ".resagent/reports/http.md",
+              }),
+            )
+            const reportPath = String(record(record(research.data).data).reportPath)
+            const report = yield* Effect.promise(() => Bun.file(path.join(directory, reportPath)).text())
+
+            expect(session.status).toBe(200)
+            expect(research.status).toBe(200)
+            expect(report).toContain("Verified over the research endpoint")
+            expect(report).toContain("## Confidence")
+            expect(report).toContain("https://fixture.invalid/evidence")
+            expect(report).toContain("## Provenance")
+          }),
+      )
+    }).pipe(Effect.provide(TestLLMServer.layer)),
+  )
+
+  httpapi(
+    "carries conflicting evidence through verification into a qualified report",
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      yield* llm.text("Compare the two independently supplied measurements.")
+      yield* llm.text(
+        "Source A reports 10 units at https://fixture.invalid/source-a. Source B reports 12 units at https://fixture.invalid/source-b.",
+      )
+      yield* llm.text("The measurements conflict by 2 units and cannot be normalized to one uncontested value.")
+      yield* llm.text(
+        "Source B is newer, but the collection does not establish that its method is more reliable. The conflict remains material.",
+      )
+      yield* llm.text(
+        [
+          "# Conflicting measurements",
+          "",
+          "## Conclusion",
+          "",
+          "The value is likely 12 units because Source B is newer, but this conclusion remains conditional on method comparability [1][2].",
+          "",
+          "## Confidence",
+          "",
+          "Medium confidence.",
+          "",
+          "## Limitations",
+          "",
+          "The sources disagree and their measurement methods were not independently validated.",
+          "",
+          "## References",
+          "",
+          "1. https://fixture.invalid/source-a",
+          "2. https://fixture.invalid/source-b",
+        ].join("\n"),
+      )
+      return yield* withProject(
+        "raw",
+        {
+          config: {
+            ...testProviderConfig(llm.url),
+            research: {
+              default_profile: "balanced",
+              profiles: {
+                balanced: {
+                  planner: ["test/test-model"],
+                  collector: ["test/test-model"],
+                  analyst: ["test/test-model"],
+                  verifier: ["test/test-model"],
+                  writer: ["test/test-model"],
+                },
+              },
+            },
+          },
+        },
+        ({ sdk, directory }) =>
+          Effect.gen(function* () {
+            const session = yield* capture(() => sdk.v2.session.create({ location: { directory } }))
+            const sessionID = String(record(record(session.data).data).id)
+            const research = yield* capture(() =>
+              sdk.v2.session.research({
+                sessionID,
+                question: "Resolve the conflicting fixture measurements",
+                path: ".resagent/reports/conflict.md",
+              }),
+            )
+            const report = yield* Effect.promise(() =>
+              Bun.file(path.join(directory, String(record(record(research.data).data).reportPath))).text(),
+            )
+            const inputs = yield* llm.inputs
+            const verification = JSON.stringify(inputs[3])
+
+            expect(research.status).toBe(200)
+            expect(verification).toContain("Challenge unsupported claims")
+            expect(verification).toContain("Source A reports 10 units")
+            expect(verification).toContain("Source B reports 12 units")
+            expect(report).toContain("conclusion remains conditional")
+            expect(report).toContain("Medium confidence")
+            expect(report).toContain("The sources disagree")
+            expect(report).toContain("https://fixture.invalid/source-a")
+            expect(report).toContain("https://fixture.invalid/source-b")
+            expect(report).toContain("## Provenance")
+          }),
+      )
+    }).pipe(Effect.provide(TestLLMServer.layer)),
+  )
+
+  httpapi(
+    "uses the first research provider when it succeeds",
+    withResearchLlms(({ sdk, directory, primary, backup }) =>
+      Effect.gen(function* () {
+        yield* primary.text("Plan")
+        yield* primary.text("Evidence")
+        yield* primary.text("Analysis")
+        yield* primary.text("Verification")
+        yield* primary.text("# Primary report")
+        const session = yield* capture(() =>
+          sdk.v2.session.create({
+            location: { directory },
+            model: { providerID: "primary", id: "primary-model" },
+          }),
+        )
+        const sessionID = String(record(record(session.data).data).id)
+        const research = yield* capture(() =>
+          sdk.v2.session.research({
+            sessionID,
+            question: "Use the primary route",
+            path: ".resagent/reports/primary.md",
+          }),
+        )
+        const report = yield* Effect.promise(() =>
+          Bun.file(path.join(directory, String(record(record(research.data).data).reportPath))).text(),
+        )
+
+        expect(research.status).toBe(200)
+        expect(yield* primary.calls).toBe(5)
+        expect(yield* backup.calls).toBe(0)
+        expect(report).toContain("Selected model: `primary/primary-model`")
+      }),
+    ),
+  )
+
+  httpapi(
+    "falls back to the second research provider after retryable HTTP failures",
+    withResearchLlms(({ sdk, directory, primary, backup }) =>
+      Effect.gen(function* () {
+        yield* primary.error(503, { error: { message: "temporarily unavailable" } })
+        yield* primary.error(503, { error: { message: "temporarily unavailable" } })
+        yield* primary.error(503, { error: { message: "temporarily unavailable" } })
+        yield* backup.text("Backup plan")
+        yield* primary.text("Evidence")
+        yield* primary.text("Analysis")
+        yield* primary.text("Verification")
+        yield* primary.text("# Fallback report")
+        const session = yield* capture(() => sdk.v2.session.create({ location: { directory } }))
+        const sessionID = String(record(record(session.data).data).id)
+        const research = yield* capture(() =>
+          sdk.v2.session.research({
+            sessionID,
+            question: "Use a safe fallback",
+            path: ".resagent/reports/fallback.md",
+          }),
+        )
+        const report = yield* Effect.promise(() =>
+          Bun.file(path.join(directory, String(record(record(research.data).data).reportPath))).text(),
+        )
+        const history = yield* capture(() => sdk.v2.session.history({ sessionID, after: 0, limit: 100 }))
+        const attempts = researchEvents(history, "session.next.research.provider.attempt.settled")
+
+        expect(research.status).toBe(200)
+        expect(yield* primary.calls).toBe(7)
+        expect(yield* backup.calls).toBe(1)
+        expect(attempts.slice(0, 2)).toMatchObject([
+          { entry: "primary/primary-model", attempt: 1, outcome: "retryable-failure", replaySafe: true },
+          { entry: "backup/backup-model", attempt: 2, outcome: "succeeded", replaySafe: false },
+        ])
+        expect(report).toContain("Selected model: `backup/backup-model`")
+        expect(report).toContain("1: `primary/primary-model`")
+        expect(report).toContain("2: `backup/backup-model`")
+      }),
+    ),
+  )
+
+  httpapi(
+    "does not fall back after an authentication failure",
+    withResearchLlms(({ sdk, directory, primary, backup }) =>
+      Effect.gen(function* () {
+        yield* primary.error(401, { error: { message: "invalid test key" } })
+        yield* backup.text("Must not run")
+        const session = yield* capture(() => sdk.v2.session.create({ location: { directory } }))
+        const sessionID = String(record(record(session.data).data).id)
+        const research = yield* capture(() =>
+          sdk.v2.session.research({
+            sessionID,
+            question: "Do not route around authentication",
+          }),
+        )
+        const history = yield* capture(() => sdk.v2.session.history({ sessionID, after: 0, limit: 100 }))
+        const attempts = researchEvents(history, "session.next.research.provider.attempt.settled")
+
+        expect(research.status).toBe(500)
+        expect(record(research.error)._tag).toBe("UnknownError")
+        expect(yield* primary.calls).toBe(1)
+        expect(yield* backup.calls).toBe(0)
+        expect(attempts).toMatchObject([
+          { entry: "primary/primary-model", attempt: 1, outcome: "terminal-failure", replaySafe: false },
+        ])
+      }),
+    ),
+  )
+
+  httpapi(
+    "records both unavailable research routes and leaves the session usable",
+    withResearchLlms(({ sdk, directory, primary, backup }) =>
+      Effect.gen(function* () {
+        yield* primary.error(503, { error: { message: "primary unavailable" } })
+        yield* primary.error(503, { error: { message: "primary unavailable" } })
+        yield* primary.error(503, { error: { message: "primary unavailable" } })
+        yield* backup.error(503, { error: { message: "backup unavailable" } })
+        yield* backup.error(503, { error: { message: "backup unavailable" } })
+        yield* backup.error(503, { error: { message: "backup unavailable" } })
+        const session = yield* capture(() =>
+          sdk.v2.session.create({
+            location: { directory },
+            model: { providerID: "primary", id: "primary-model" },
+          }),
+        )
+        const sessionID = String(record(record(session.data).data).id)
+        const research = yield* capture(() =>
+          sdk.v2.session.research({
+            sessionID,
+            question: "Exhaust the configured route",
+          }),
+        )
+        const history = yield* capture(() => sdk.v2.session.history({ sessionID, after: 0, limit: 100 }))
+        const attempts = researchEvents(history, "session.next.research.provider.attempt.settled")
+        yield* primary.text("Session recovered")
+        const prompt = yield* capture(() =>
+          sdk.v2.session.prompt({
+            sessionID,
+            prompt: { text: "Continue after the failed research run" },
+            resume: true,
+          }),
+        )
+        yield* primary.wait(4).pipe(Effect.timeout("5 seconds"))
+
+        expect(research.status).toBe(500)
+        expect(attempts).toMatchObject([
+          { entry: "primary/primary-model", attempt: 1, outcome: "retryable-failure", replaySafe: true },
+          { entry: "backup/backup-model", attempt: 2, outcome: "terminal-failure", replaySafe: false },
+        ])
+        expect(yield* primary.calls).toBe(4)
+        expect(yield* backup.calls).toBe(3)
+        expect(prompt.status).toBe(200)
+      }),
+    ),
+  )
+
+  httpapi(
+    "rejects research while steering or queued input is pending",
+    withProject("raw", {}, ({ sdk, directory }) =>
+      Effect.gen(function* () {
+        const createPending = Effect.fn(function* (delivery: "steer" | "queue") {
+          const session = yield* capture(() => sdk.v2.session.create({ location: { directory } }))
+          const sessionID = String(record(record(session.data).data).id)
+          const prompt = yield* capture(() =>
+            sdk.v2.session.prompt({
+              sessionID,
+              prompt: { text: `${delivery} input` },
+              delivery,
+              resume: false,
+            }),
+          )
+          const research = yield* capture(() =>
+            sdk.v2.session.research({
+              sessionID,
+              question: "Should not start",
+            }),
+          )
+          return { session, prompt, research }
+        })
+
+        const steer = yield* createPending("steer")
+        const queue = yield* createPending("queue")
+
+        expect(statuses(steer)).toEqual({ session: 200, prompt: 200, research: 409 })
+        expect(statuses(queue)).toEqual({ session: 200, prompt: 200, research: 409 })
+        expect(record(steer.research.error)._tag).toBe("ConflictError")
+        expect(record(queue.research.error)._tag).toBe("ConflictError")
       }),
     ),
   )

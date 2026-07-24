@@ -54,14 +54,20 @@ runs:
       shell: bash
 
     - name: Install dependencies
+      env:
+        INSTALL_FLAGS: ${{ inputs.install-flags }}
       run: |
         # Workaround for patched peer variants
         # e.g. ./patches/ for standard-openapi
         # https://github.com/oven-sh/bun/issues/28147
+        install_flags=()
+        if [ -n "$INSTALL_FLAGS" ]; then
+          read -r -a install_flags <<< "$INSTALL_FLAGS"
+        fi
         if [ "$RUNNER_OS" = "Windows" ]; then
-          bun install --linker hoisted ${{ inputs.install-flags }}
+          bun install --linker hoisted "${install_flags[@]}"
         else
-          bun install ${{ inputs.install-flags }}
+          bun install "${install_flags[@]}"
         fi
       shell: bash
 

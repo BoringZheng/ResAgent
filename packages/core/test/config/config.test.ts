@@ -161,6 +161,64 @@ describe("Config", () => {
     ),
   )
 
+  it.live("loads explicit and inline configuration after discovered files", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const explicit = path.join(tmp.path, "explicit.json")
+          yield* Effect.promise(() =>
+            Promise.all([
+              fs.writeFile(path.join(tmp.path, "opencode.json"), JSON.stringify({ model: "base/model" })),
+              fs.writeFile(explicit, JSON.stringify({ model: "explicit/model" })),
+            ]),
+          )
+          const previousPath = process.env.OPENCODE_CONFIG
+          const previousContent = process.env.OPENCODE_CONFIG_CONTENT
+          process.env.OPENCODE_CONFIG = explicit
+          process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+            model: "inline/model",
+            research: {
+              default_profile: "balanced",
+              profiles: {
+                balanced: {
+                  planner: ["inline/model"],
+                  collector: ["inline/model"],
+                  analyst: ["inline/model"],
+                  verifier: ["inline/model"],
+                  writer: ["inline/model"],
+                },
+              },
+            },
+          })
+
+          return yield* Effect.gen(function* () {
+            const config = yield* Config.Service
+            const entries = yield* config.entries()
+            expect(entries.filter((entry) => entry.type === "document").map((entry) => entry.info.model)).toEqual([
+              "base/model",
+              "explicit/model",
+              "inline/model",
+            ])
+            expect(Config.latest(entries, "research")?.default_profile).toBe("balanced")
+          }).pipe(
+            Effect.provide(testLayer(tmp.path)),
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (previousPath === undefined) delete process.env.OPENCODE_CONFIG
+                else process.env.OPENCODE_CONFIG = previousPath
+                if (previousContent === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+                else process.env.OPENCODE_CONFIG_CONTENT = previousContent
+              }),
+            ),
+          )
+        }),
+      ),
+    ),
+  )
+
   it.live("loads opencode JSON and JSONC files from lowest to highest priority", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),

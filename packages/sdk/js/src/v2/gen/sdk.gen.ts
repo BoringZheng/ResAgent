@@ -371,6 +371,8 @@ import type {
   V2SessionQuestionRejectResponses,
   V2SessionQuestionReplyErrors,
   V2SessionQuestionReplyResponses,
+  V2SessionResearchErrors,
+  V2SessionResearchResponses,
   V2SessionRevertClearErrors,
   V2SessionRevertClearResponses,
   V2SessionRevertCommitErrors,
@@ -5741,6 +5743,45 @@ export class Session3 extends HeyApiClient {
       url: "/api/session/{sessionID}/history",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Run research workflow
+   *
+   * Run the durable five-stage research workflow for an idle session and export its Markdown report.
+   */
+  public research<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      question?: string
+      profile?: string
+      path?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "body", key: "question" },
+            { in: "body", key: "profile" },
+            { in: "body", key: "path" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<V2SessionResearchResponses, V2SessionResearchErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}/research",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 

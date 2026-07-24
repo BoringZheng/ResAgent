@@ -51,7 +51,13 @@ import { memoMap } from "@opencode-ai/core/effect/memo-map"
 import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { EventV2 } from "@opencode-ai/core/event"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LocationServiceMap } from "@opencode-ai/core/location-services"
+import { ResearchWorkflow } from "@opencode-ai/core/research-workflow"
+import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SessionExecutionLocal } from "@opencode-ai/core/session/execution/local"
 import { AppNodeBuilderV1 } from "./app-node-builder-v1"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 
@@ -82,6 +88,10 @@ export const AppLayer = AppNodeBuilderV1.build(
     BackgroundJob.node,
     RuntimeFlags.node,
     EventV2Bridge.node,
+    EventV2.node,
+    LocationServiceMap.node,
+    SessionV2.node,
+    ResearchWorkflow.node,
     SessionRunState.node,
     SessionProcessor.node,
     SessionCompaction.node,
@@ -106,6 +116,7 @@ export const AppLayer = AppNodeBuilderV1.build(
     ShareNext.node,
     SessionShare.node,
   ]),
+  [[SessionExecution.node, SessionExecutionLocal.node]],
 ).pipe(Layer.provideMerge(AppNodeBuilderV1.build(Ripgrep.node)), Layer.provideMerge(Observability.layer))
 
 const rt = ManagedRuntime.make(AppLayer, { memoMap })

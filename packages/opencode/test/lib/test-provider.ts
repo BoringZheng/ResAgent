@@ -6,32 +6,36 @@
 // Used by:
 //   - test/lib/run-process.ts          (subprocess CLI tests)
 //   - test/server/httpapi-sdk.test.ts  (in-process SDK tests)
+export function testProvider(id: string, llmUrl: string, modelID = "test-model") {
+  return {
+    name: `Test ${id}`,
+    id,
+    env: [],
+    npm: "@ai-sdk/openai-compatible",
+    models: {
+      [modelID]: {
+        id: modelID,
+        name: `Test ${modelID}`,
+        attachment: false,
+        reasoning: false,
+        temperature: false,
+        tool_call: true,
+        release_date: "2025-01-01",
+        limit: { context: 100_000, output: 10_000 },
+        cost: { input: 0, output: 0 },
+        options: {},
+      },
+    },
+    options: { apiKey: "test-key", baseURL: llmUrl },
+  }
+}
+
 export function testProviderConfig(llmUrl: string) {
   return {
     formatter: false,
     lsp: false,
     provider: {
-      test: {
-        name: "Test",
-        id: "test",
-        env: [],
-        npm: "@ai-sdk/openai-compatible",
-        models: {
-          "test-model": {
-            id: "test-model",
-            name: "Test Model",
-            attachment: false,
-            reasoning: false,
-            temperature: false,
-            tool_call: true,
-            release_date: "2025-01-01",
-            limit: { context: 100_000, output: 10_000 },
-            cost: { input: 0, output: 0 },
-            options: {},
-          },
-        },
-        options: { apiKey: "test-key", baseURL: llmUrl },
-      },
+      test: testProvider("test", llmUrl),
     },
   }
 }

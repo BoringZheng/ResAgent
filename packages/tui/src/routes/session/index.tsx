@@ -77,6 +77,8 @@ import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode 
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
+import { useData } from "../../context/data"
+import { parseRemoteRunResult, type RemoteRunResult } from "../../util/remote-run"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
@@ -274,6 +276,7 @@ export function Session() {
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
   const sdk = useSDK()
+  const data = useData()
   const editor = useEditorContext()
 
   createEffect(() => {
@@ -304,6 +307,7 @@ export function Session() {
       }
       editor.reconnect(result.data.directory)
       await sync.session.sync(sessionID)
+      await Promise.allSettled([data.session.message.refresh(sessionID), data.session.research.refresh(sessionID)])
       if (route.sessionID === sessionID && scroll) scroll.scrollBy(100_000)
     })().catch((error) => {
       if (route.sessionID !== sessionID) return
@@ -1761,6 +1765,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={display() === "execute"}>
           <Execute {...toolprops} />
         </Match>
+        <Match when={display() === "remote_run"}>
+          <RemoteRun {...toolprops} />
+        </Match>
         <Match when={display() === "apply_patch"}>
           <ApplyPatch {...toolprops} />
         </Match>
@@ -2092,6 +2099,111 @@ function Shell(props: ToolProps) {
         </InlineTool>
       </Match>
     </Switch>
+  )
+}
+
+function RemoteRun(props: ToolProps) {
+  const { theme } = useTheme()
+  const data = useData()
+  const ctx = use()
+  const [expanded, setExpanded] = createSignal(false)
+  const tool = createMemo(() => data.session.message.tool(props.part.sessionID, props.part.callID))
+  const result = createMemo(() => {
+    const state = tool()?.state
+    if (state?.status !== "completed" && state?.status !== "error") return
+    return parseRemoteRunResult(state.result)
+  })
+  const hosts = createMemo(() =>
+    Array.isArray(props.input.hosts)
+      ? props.input.hosts.filter((item): item is string => typeof item === "string")
+      : [],
+  )
+  const output = createMemo(() =>
+    (result()?.results ?? []).flatMap((item) => [
+      ...(item.stdout.trim() ? [`[${item.host}] stdout\n${stripAnsi(item.stdout.trim())}`] : []),
+      ...(item.stderr.trim() ? [`[${item.host}] stderr\n${stripAnsi(item.stderr.trim())}`] : []),
+    ]),
+  )
+  const collapsed = createMemo(() => collapseToolOutput(output().join("\n\n"), 12, 12 * Math.max(20, ctx.width - 6)))
+
+  return (
+    <Show
+      when={result()}
+      fallback={
+        <InlineTool
+          icon="⇄"
+          pending="Preparing remote command..."
+          complete={props.part.state.status === "completed"}
+          part={props.part}
+        >
+          Remote {hosts().join(", ") || "hosts"}: {stringValue(props.input.command)}
+        </InlineTool>
+      }
+    >
+      {(remote) => (
+        <BlockTool
+          title={`# Remote ${remote()
+            .results.map((item) => item.host)
+            .join(", ")}`}
+          part={props.part}
+          onClick={collapsed().overflow ? () => setExpanded((value) => !value) : undefined}
+        >
+          <RemoteRunResultView
+            result={remote()}
+            output={output()}
+            collapsed={collapsed()}
+            expanded={expanded()}
+            theme={theme}
+          />
+        </BlockTool>
+      )}
+    </Show>
+  )
+}
+
+export function RemoteRunResultView(props: {
+  result: RemoteRunResult
+  output: string[]
+  collapsed: { output: string; overflow: boolean }
+  expanded: boolean
+  theme: {
+    text: RGBA
+    textMuted: RGBA
+    success: RGBA
+    warning: RGBA
+    error: RGBA
+  }
+}) {
+  return (
+    <>
+      <text fg={props.theme.text}>$ {props.result.command}</text>
+      <For each={props.result.results}>
+        {(item) => (
+          <text
+            fg={
+              item.status === "ok"
+                ? props.theme.success
+                : item.status === "timeout"
+                  ? props.theme.warning
+                  : props.theme.error
+            }
+          >
+            {item.status === "ok" ? "✓" : item.status === "timeout" ? "!" : "✗"} {item.host} · {item.status} ·{" "}
+            {Locale.duration(item.duration_ms)}
+            <Show when={item.exit !== undefined}> · exit {item.exit}</Show>
+            <Show when={item.truncated}> · truncated</Show>
+          </text>
+        )}
+      </For>
+      <Show when={props.output.length}>
+        <text fg={props.theme.text}>
+          {props.expanded || !props.collapsed.overflow ? props.output.join("\n\n") : props.collapsed.output}
+        </text>
+      </Show>
+      <Show when={props.collapsed.overflow}>
+        <text fg={props.theme.textMuted}>{props.expanded ? "Click to collapse" : "Click to expand"}</text>
+      </Show>
+    </>
   )
 }
 
@@ -2642,6 +2754,7 @@ const toolDisplays = new Set([
   "question",
   "skill",
   "execute",
+  "remote_run",
 ])
 
 export function toolDisplay(tool: string) {

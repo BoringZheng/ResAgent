@@ -484,3 +484,210 @@ test("projects live context updates with their message ID", async () => {
     app.renderer.destroy()
   }
 })
+
+test("hydrates research state across durable history pages", async () => {
+  const events = createEventSource()
+  const calls = createFetch((url) => {
+    if (url.pathname !== "/api/session/ses_research/history") return
+    const after = Number(url.searchParams.get("after") ?? "0")
+    if (after === 0)
+      return json({
+        data: [
+          {
+            id: "evt_research_1",
+            type: "session.next.research.started",
+            durable: { aggregateID: "ses_research", seq: 1, version: 1 },
+            data: {
+              timestamp: 1,
+              sessionID: "ses_research",
+              runID: "run_research",
+              profile: "balanced",
+              question: "What changed?",
+            },
+          },
+          {
+            id: "evt_research_2",
+            type: "session.next.research.stage.started",
+            durable: { aggregateID: "ses_research", seq: 2, version: 1 },
+            data: {
+              timestamp: 2,
+              sessionID: "ses_research",
+              runID: "run_research",
+              stage: "plan",
+              role: "planner",
+              route: ["openai/gpt-test", "anthropic/claude-test"],
+            },
+          },
+        ],
+        hasMore: true,
+      })
+    if (after === 2)
+      return json({
+        data: [
+          {
+            id: "evt_research_3",
+            type: "session.next.research.provider.attempted",
+            durable: { aggregateID: "ses_research", seq: 3, version: 1 },
+            data: {
+              timestamp: 3,
+              sessionID: "ses_research",
+              runID: "run_research",
+              stage: "plan",
+              role: "planner",
+              turnID: "turn_research",
+              entry: "openai/gpt-test",
+              attempt: 1,
+            },
+          },
+        ],
+        hasMore: false,
+      })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let ready!: () => void
+  const mounted = new Promise<void>((resolve) => {
+    ready = resolve
+  })
+
+  function Probe() {
+    data = useData()
+    onMount(ready)
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </SDKProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await mounted
+    await data.session.research.refresh("ses_research")
+    expect(JSON.parse(JSON.stringify(data.session.research.get("ses_research")))).toMatchObject({
+      id: "run_research",
+      status: "active",
+      stages: [
+        {
+          stage: "plan",
+          route: ["openai/gpt-test", "anthropic/claude-test"],
+          attempts: [{ entry: "openai/gpt-test", status: "active" }],
+        },
+      ],
+    })
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("merges live research events that arrive during reconnect hydration", async () => {
+  const events = createEventSource()
+  let resolveHistory!: (response: Response) => void
+  const history = new Promise<Response>((resolve) => {
+    resolveHistory = resolve
+  })
+  const requests = { history: 0, research: 0 }
+  const calls = createFetch((url) => {
+    if (url.pathname === "/api/session/ses_reconnect/research") {
+      requests.research++
+      return json({ data: { runID: "run_unexpected", reportPath: "unexpected.md" } })
+    }
+    if (url.pathname !== "/api/session/ses_reconnect/history") return
+    requests.history++
+    return history
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let ready!: () => void
+  const mounted = new Promise<void>((resolve) => {
+    ready = resolve
+  })
+
+  function Probe() {
+    data = useData()
+    onMount(ready)
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </SDKProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await mounted
+    const refresh = data.session.research.refresh("ses_reconnect")
+    await wait(() => requests.history === 1)
+    const attempted = {
+      id: "evt_reconnect_attempt",
+      type: "session.next.research.provider.attempted",
+      properties: {
+        timestamp: 3,
+        sessionID: "ses_reconnect",
+        runID: "run_reconnect",
+        stage: "plan",
+        role: "planner",
+        turnID: "turn_reconnect",
+        entry: "primary/model",
+        attempt: 1,
+      },
+      durable: { aggregateID: "ses_reconnect", seq: 3, version: 1 },
+    } as Event
+    emitEvent(events, attempted)
+    resolveHistory(
+      json({
+        data: [
+          {
+            id: "evt_reconnect_started",
+            type: "session.next.research.started",
+            durable: { aggregateID: "ses_reconnect", seq: 1, version: 1 },
+            data: {
+              timestamp: 1,
+              sessionID: "ses_reconnect",
+              runID: "run_reconnect",
+              profile: "balanced",
+              question: "Reconnect safely",
+            },
+          },
+          {
+            id: "evt_reconnect_stage",
+            type: "session.next.research.stage.started",
+            durable: { aggregateID: "ses_reconnect", seq: 2, version: 1 },
+            data: {
+              timestamp: 2,
+              sessionID: "ses_reconnect",
+              runID: "run_reconnect",
+              stage: "plan",
+              role: "planner",
+              route: ["primary/model", "backup/model"],
+            },
+          },
+        ],
+        hasMore: false,
+      }),
+    )
+    await refresh
+
+    expect(JSON.parse(JSON.stringify(data.session.research.get("ses_reconnect")?.stages[0]?.attempts))).toMatchObject([
+      { entry: "primary/model", attempt: 1, status: "active" },
+    ])
+    emitEvent(events, attempted)
+    await wait(() => data.session.research.get("ses_reconnect")?.stages[0]?.attempts.length === 1)
+    expect(data.session.research.get("ses_reconnect")?.stages[0]?.attempts).toHaveLength(1)
+    expect(requests).toEqual({ history: 1, research: 0 })
+  } finally {
+    app.renderer.destroy()
+  }
+})

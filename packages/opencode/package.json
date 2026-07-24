@@ -12,11 +12,14 @@
     "bench:test": "bun run script/bench-test-suite.ts",
     "profile:test": "bun run script/profile-test-files.ts",
     "build": "bun run script/build.ts",
+    "release:resagent": "bun run script/build.ts --archive",
+    "verify:resagent-release": "bun run script/verify-release.ts",
     "dev": "bun run --conditions=browser ./src/index.ts",
     "dev:temporary": "bun run --conditions=browser ./src/temporary.ts"
   },
   "bin": {
-    "opencode": "./bin/opencode"
+    "opencode": "./bin/opencode",
+    "resagent": "./bin/resagent"
   },
   "exports": {
     "./*": "./src/*.ts"

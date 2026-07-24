@@ -6,7 +6,7 @@ import { Event } from "./event"
 import { ProviderMetadata, ToolContent } from "./llm"
 import { Delivery } from "./session-delivery"
 import { Model } from "./model"
-import { DateTimeUtcFromMillis, NonNegativeInt, RelativePath } from "./schema"
+import { DateTimeUtcFromMillis, NonNegativeInt, PositiveInt, RelativePath } from "./schema"
 import { FileAttachment, Prompt } from "./prompt"
 import { SessionID } from "./session-id"
 import { Location } from "./location"
@@ -445,6 +445,122 @@ export namespace RevertEvent {
   })
 }
 
+export namespace Research {
+  export const Stage = Schema.Literals(["plan", "collect", "analyze", "verify", "report"])
+  export type Stage = typeof Stage.Type
+
+  export const Role = Schema.Literals(["planner", "collector", "analyst", "verifier", "writer"])
+  export type Role = typeof Role.Type
+  export const RunID = Schema.String.check(Schema.isPattern(/^run_[A-Za-z0-9]+$/))
+  export const TurnID = Schema.String.check(Schema.isPattern(/^turn_[A-Za-z0-9]+$/))
+  export const Profile = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/))
+  export const RouteEntry = Schema.String.check(Schema.isPattern(/^[^\s/]+\/\S+$/))
+
+  export const Started = Event.define({
+    type: "session.next.research.started",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      profile: Profile,
+      question: Schema.String,
+    },
+  })
+  export type Started = typeof Started.Type
+
+  export const StageStarted = Event.define({
+    type: "session.next.research.stage.started",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      stage: Stage,
+      role: Role,
+      route: Schema.Array(RouteEntry),
+    },
+  })
+  export type StageStarted = typeof StageStarted.Type
+
+  export const ProviderAttempted = Event.define({
+    type: "session.next.research.provider.attempted",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      stage: Stage,
+      role: Role,
+      turnID: TurnID,
+      entry: RouteEntry,
+      attempt: PositiveInt,
+    },
+  })
+  export type ProviderAttempted = typeof ProviderAttempted.Type
+
+  export const ProviderAttemptSettled = Event.define({
+    type: "session.next.research.provider.attempt.settled",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      stage: Stage,
+      role: Role,
+      turnID: TurnID,
+      entry: RouteEntry,
+      attempt: PositiveInt,
+      outcome: Schema.Literals(["succeeded", "retryable-failure", "terminal-failure"]),
+      replaySafe: Schema.Boolean,
+      messageID: SessionMessage.ID.pipe(optional),
+    },
+  })
+  export type ProviderAttemptSettled = typeof ProviderAttemptSettled.Type
+
+  export const StageCompleted = Event.define({
+    type: "session.next.research.stage.completed",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      stage: Stage,
+      messageID: SessionMessage.ID,
+    },
+  })
+  export type StageCompleted = typeof StageCompleted.Type
+
+  export const Completed = Event.define({
+    type: "session.next.research.completed",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      reportPath: Schema.String.pipe(optional),
+    },
+  })
+  export type Completed = typeof Completed.Type
+
+  export const Failed = Event.define({
+    type: "session.next.research.failed",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      message: Schema.String,
+    },
+  })
+  export type Failed = typeof Failed.Type
+
+  export const DurableDefinitions = Event.inventory(
+    Started,
+    StageStarted,
+    ProviderAttempted,
+    ProviderAttemptSettled,
+    StageCompleted,
+    Completed,
+    Failed,
+  )
+  export const Durable = Schema.Union(DurableDefinitions, { mode: "oneOf" }).pipe(Schema.toTaggedUnion("type"))
+  export type DurableEvent = typeof Durable.Type
+}
+
 export const DurableDefinitions = Event.inventory(
   AgentSwitched,
   ModelSwitched,
@@ -474,6 +590,7 @@ export const DurableDefinitions = Event.inventory(
   RevertEvent.Staged,
   RevertEvent.Cleared,
   RevertEvent.Committed,
+  ...Research.DurableDefinitions,
 )
 
 export const Definitions = Event.inventory(
@@ -509,6 +626,7 @@ export const Definitions = Event.inventory(
   RevertEvent.Staged,
   RevertEvent.Cleared,
   RevertEvent.Committed,
+  ...Research.DurableDefinitions,
 )
 
 export const Durable = Schema.Union(DurableDefinitions, { mode: "oneOf" })

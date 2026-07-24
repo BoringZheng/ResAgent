@@ -24,6 +24,8 @@ import { Pty } from "./pty"
 import { QuestionV2 } from "./question"
 import { Reference } from "./reference"
 import { ReferenceGuidance } from "./reference/guidance"
+import { Remote } from "./remote"
+import { ResearchRoute } from "./research-route"
 import * as SessionRunnerLLM from "./session/runner/llm"
 import { SessionRunnerModel } from "./session/runner/model"
 import { SessionTodo } from "./session/todo"
@@ -69,6 +71,8 @@ export const locationServices = LayerNode.group([
   Image.node,
   SkillGuidance.node,
   ReferenceGuidance.node,
+  Remote.node,
+  ResearchRoute.node,
   SessionTodo.node,
   QuestionV2.node,
   ReadToolFileSystem.node,

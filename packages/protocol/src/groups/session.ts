@@ -91,6 +91,12 @@ export const SessionHistoryQuery = Schema.Struct({
   after: Schema.NumberFromString.pipe(Schema.decodeTo(NonNegativeInt), Schema.optional),
 })
 
+export const ResearchPayload = Schema.Struct({
+  question: Schema.NonEmptyString,
+  profile: Schema.String.pipe(Schema.optional),
+  path: Schema.String.pipe(Schema.optional),
+})
+
 const SessionsQueryCursor = SessionsCursor.annotate({
   description: "Opaque pagination cursor returned as cursor.previous or cursor.next in the previous response.",
 })
@@ -320,6 +326,28 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
             summary: "Get session history",
             description:
               "Read one finite page of public durable Session events after an exclusive aggregate sequence. Newly committed events may appear on later pages.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.research", "/api/session/:sessionID/research", {
+        params: { sessionID: Session.ID },
+        payload: ResearchPayload,
+        success: Schema.Struct({
+          data: Schema.Struct({
+            runID: Schema.String,
+            reportPath: Schema.String,
+          }),
+        }),
+        error: [InvalidRequestError, ConflictError, SessionNotFoundError, UnknownError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.research",
+            summary: "Run research workflow",
+            description:
+              "Run the durable five-stage research workflow for an idle session and export its Markdown report.",
           }),
         ),
     )

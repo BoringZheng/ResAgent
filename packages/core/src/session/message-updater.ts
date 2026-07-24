@@ -390,6 +390,13 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
       "session.next.revert.staged": () => Effect.void,
       "session.next.revert.cleared": () => Effect.void,
       "session.next.revert.committed": () => Effect.void,
+      "session.next.research.started": () => Effect.void,
+      "session.next.research.stage.started": () => Effect.void,
+      "session.next.research.provider.attempted": () => Effect.void,
+      "session.next.research.provider.attempt.settled": () => Effect.void,
+      "session.next.research.stage.completed": () => Effect.void,
+      "session.next.research.completed": () => Effect.void,
+      "session.next.research.failed": () => Effect.void,
     })
   })
 }

@@ -23,6 +23,7 @@ import { createSimpleContext } from "./helper"
 import { useSDK } from "./sdk"
 import { useEvent } from "./event"
 import { createSignal, onCleanup, onMount } from "solid-js"
+import { foldResearchEvents, isResearchEvent, type ResearchEvent, type ResearchState } from "../util/research-state"
 
 type LocationData = {
   agent?: AgentV2Info[]
@@ -40,6 +41,7 @@ type Data = {
     message: Record<string, SessionMessage[]>
     permission: Record<string, PermissionV2Request[]>
     question: Record<string, QuestionV2Request[]>
+    research: Record<string, ResearchState | undefined>
   }
   project: {
     permission: Record<string, PermissionSavedInfo[]>
@@ -64,6 +66,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         message: {},
         permission: {},
         question: {},
+        research: {},
       },
       project: {
         permission: {},
@@ -120,8 +123,20 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         )
       },
     }
+    const researchEvents = new Map<string, Map<string, ResearchEvent>>()
+
+    function updateResearch(event: ResearchEvent) {
+      const events = researchEvents.get(event.data.sessionID) ?? new Map<string, ResearchEvent>()
+      events.set(event.id, event)
+      researchEvents.set(event.data.sessionID, events)
+      setStore("session", "research", event.data.sessionID, foldResearchEvents([...events.values()]))
+    }
 
     function handleEvent(event: V2Event) {
+      if (isResearchEvent(event)) {
+        updateResearch(event)
+        return
+      }
       switch (event.type) {
         case "catalog.updated":
           void Promise.all([
@@ -430,6 +445,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             const result = await sdk.client.v2.session.messages({ sessionID }, { throwOnError: true })
             setStore("session", "message", sessionID, result.data.data)
           },
+          tool(sessionID: string, callID: string) {
+            return store.session.message[sessionID]
+              ?.flatMap((item) => (item.type === "assistant" ? item.content : []))
+              .findLast((item): item is SessionMessageAssistantTool => item.type === "tool" && item.id === callID)
+          },
         },
         permission: {
           list(sessionID: string) {
@@ -447,6 +467,30 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           async refresh(sessionID: string) {
             const result = await sdk.client.v2.session.question.list({ sessionID }, { throwOnError: true })
             setStore("session", "question", sessionID, result.data.data)
+          },
+        },
+        research: {
+          get(sessionID: string) {
+            return store.session.research[sessionID]
+          },
+          async refresh(sessionID: string) {
+            const events = researchEvents.get(sessionID) ?? new Map<string, ResearchEvent>()
+            researchEvents.set(sessionID, events)
+            let after = 0
+            while (true) {
+              const result = await sdk.client.v2.session.history(
+                { sessionID, after, limit: 100 },
+                { throwOnError: true },
+              )
+              for (const event of result.data.data) {
+                if (isResearchEvent(event)) events.set(event.id, event)
+              }
+              if (!result.data.hasMore) break
+              const next = result.data.data.at(-1)?.durable?.seq
+              if (next === undefined || next <= after) break
+              after = next
+            }
+            setStore("session", "research", sessionID, foldResearchEvents([...events.values()]))
           },
         },
       },

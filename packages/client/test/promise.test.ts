@@ -102,6 +102,7 @@ test("session methods use the public HTTP contract", async () => {
           historyPage === 1 ? { data: [modelSwitchedEvent], hasMore: true } : { data: [], hasMore: false },
         )
       }
+      if (url.endsWith("/research")) return Response.json({ data: { runID: "run_test", reportPath: "/tmp/report.md" } })
       if (url.includes("/prompt")) return Response.json(admission)
       if (url.includes("/context")) return Response.json({ data: [] })
       if (url.includes("/message/")) return Response.json({ data: modelSwitchedMessage })
@@ -133,6 +134,12 @@ test("session methods use the public HTTP contract", async () => {
   const historyNext = history.hasMore
     ? await client.sessions.history({ sessionID: "ses_test", after: historyAfter, limit: 2 })
     : undefined
+  const research = await client.sessions.research({
+    sessionID: "ses_test",
+    question: "Compare systems",
+    profile: "balanced",
+    path: ".resagent/reports/compare.md",
+  })
   const events = []
   for await (const event of client.sessions.events({ sessionID: "ses_test", after: 0 })) events.push(event)
   await client.sessions.interrupt({ sessionID: "ses_test" })
@@ -145,6 +152,7 @@ test("session methods use the public HTTP contract", async () => {
   expect(context).toEqual([])
   expect(history).toEqual({ data: [modelSwitchedEvent], hasMore: true })
   expect(historyNext).toEqual({ data: [], hasMore: false })
+  expect(research).toEqual({ runID: "run_test", reportPath: "/tmp/report.md" })
   expect(events).toEqual([modelSwitchedEvent])
   expect(message).toEqual(modelSwitchedMessage)
   expect(requests.map((request) => [request.init?.method, request.url])).toEqual([
@@ -159,6 +167,7 @@ test("session methods use the public HTTP contract", async () => {
     ["GET", "http://localhost:3000/api/session/ses_test/context"],
     ["GET", "http://localhost:3000/api/session/ses_test/history?limit=1&after=0"],
     ["GET", "http://localhost:3000/api/session/ses_test/history?limit=2&after=1"],
+    ["POST", "http://localhost:3000/api/session/ses_test/research"],
     ["GET", "http://localhost:3000/api/session/ses_test/event?after=0"],
     ["POST", "http://localhost:3000/api/session/ses_test/interrupt"],
     ["GET", "http://localhost:3000/api/session/ses_test/message/msg_model"],
@@ -168,6 +177,13 @@ test("session methods use the public HTTP contract", async () => {
   expect(JSON.parse(body)).toEqual({
     prompt: { text: "Hello" },
     resume: false,
+  })
+  const researchBody = requests.find((request) => request.url.endsWith("/research"))?.init?.body
+  if (typeof researchBody !== "string") throw new Error("Expected JSON research request body")
+  expect(JSON.parse(researchBody)).toEqual({
+    question: "Compare systems",
+    profile: "balanced",
+    path: ".resagent/reports/compare.md",
   })
 })
 

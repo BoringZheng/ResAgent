@@ -9,6 +9,10 @@ class Right extends Context.Service<Right, { readonly value: string }>()("test/L
 class Database extends Context.Service<Database, { readonly name: string }>()("test/GraphDatabase") {}
 class Users extends Context.Service<Users, { readonly list: Effect.Effect<string[]> }>()("test/GraphUsers") {}
 class App extends Context.Service<App, { readonly run: Effect.Effect<string[]> }>()("test/GraphApp") {}
+class Registry extends Context.Service<Registry, { readonly values: string[] }>()("test/GraphRegistry") {}
+class RegistryLoader extends Context.Service<RegistryLoader, { readonly load: Effect.Effect<void> }>()(
+  "test/GraphRegistryLoader",
+) {}
 
 const tags = LayerNode.tags({ app: [] })
 const make = tags.make("app")
@@ -35,6 +39,60 @@ describe("layer node", () => {
   test("builds a dependency graph", async () => {
     const program = Effect.map(Greeting, (item) => item.value).pipe(Effect.provide(build(LayerNode.group([greeting]))))
     expect(await Effect.runPromise(program)).toBe("hello production")
+  })
+
+  test("shares a root service with side-effect nodes that depend on it", async () => {
+    const registry = make({
+      service: Registry,
+      layer: Layer.sync(Registry, () => Registry.of({ values: [] })),
+      deps: [],
+    })
+    const loader = make({
+      name: "test/GraphRegistryLoader",
+      layer: Layer.effectDiscard(
+        Effect.map(Registry, (current) => {
+          current.values.push("loaded")
+        }),
+      ),
+      deps: [registry],
+    })
+    const program = Effect.map(Registry, (current) => current.values).pipe(
+      Effect.provide(build(LayerNode.group([registry, loader]))),
+    )
+
+    expect(await Effect.runPromise(program)).toEqual(["loaded"])
+  })
+
+  test("shares services captured by another root with downstream side effects", async () => {
+    const registry = make({
+      service: Registry,
+      layer: Layer.sync(Registry, () => Registry.of({ values: [] })),
+      deps: [],
+    })
+    const loader = make({
+      service: RegistryLoader,
+      layer: Layer.effect(
+        RegistryLoader,
+        Effect.map(Registry, (current) =>
+          RegistryLoader.of({
+            load: Effect.sync(() => {
+              current.values.push("loaded")
+            }),
+          }),
+        ),
+      ),
+      deps: [registry],
+    })
+    const boot = make({
+      name: "test/GraphRegistryBoot",
+      layer: Layer.effectDiscard(Effect.flatMap(RegistryLoader, (current) => current.load)),
+      deps: [loader],
+    })
+    const program = Effect.map(Registry, (current) => current.values).pipe(
+      Effect.provide(build(LayerNode.group([registry, loader, boot]))),
+    )
+
+    expect(await Effect.runPromise(program)).toEqual(["loaded"])
   })
 
   test("exposes roots but hides transitive dependencies", () => {

@@ -537,6 +537,21 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("rejects a durable publish when the aggregate sequence has advanced", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = EventV2.ID.create()
+
+      yield* events.publish(SyncSent, { messageID: aggregateID, text: "first" }, { expectedSequence: -1 })
+      const conflict = yield* events
+        .publish(SyncSent, { messageID: aggregateID, text: "stale" }, { expectedSequence: -1 })
+        .pipe(Effect.catchDefect(Effect.succeed))
+
+      expect(conflict).toBeInstanceOf(EventV2.ConcurrentAggregateWriteError)
+      expect(conflict).toMatchObject({ aggregateID, expected: -1, actual: 0 })
+    }),
+  )
+
   it.effect("replays durable events through projectors", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
@@ -1094,6 +1109,34 @@ describe("EventV2", () => {
         .pipe(Effect.orDie)
 
       expect(row).toEqual({ seq: 0, ownerID: "owner-2" })
+    }),
+  )
+
+  it.effect("ordinary local publishes continue after an aggregate ownership claim", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = EventV2.ID.create()
+      const received = new Array<string>()
+      yield* events.project(SyncMessage, (event) =>
+        Effect.sync(() => {
+          received.push(event.data.text)
+        }),
+      )
+
+      yield* events.publish(SyncMessage, { id: aggregateID, text: "before claim" })
+      yield* events.claim(aggregateID, "owner-1")
+      const event = yield* events.publish(SyncMessage, { id: aggregateID, text: "after claim" })
+      const row = yield* db
+        .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+        .from(EventSequenceTable)
+        .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+        .get()
+        .pipe(Effect.orDie)
+
+      expect(event.durable?.seq).toBe(1)
+      expect(row).toEqual({ seq: 1, ownerID: "owner-1" })
+      expect(received).toEqual(["before claim", "after claim"])
     }),
   )
 

@@ -1,0 +1,145 @@
+name: ResAgent native release
+
+on:
+  pull_request:
+    paths:
+      - ".github/actions/setup-bun/**"
+      - ".github/workflows/resagent-release.yml"
+      - "packages/client/**"
+      - "packages/core/**"
+      - "packages/opencode/**"
+      - "packages/protocol/**"
+      - "packages/schema/**"
+      - "packages/sdk/js/**"
+      - "packages/server/**"
+      - "packages/tui/**"
+      - "bun.lock"
+      - "package.json"
+  push:
+    branches:
+      - resagent
+    tags:
+      - "resagent-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Artifact version for a manual verification run"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resagent-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  native:
+    name: native (${{ matrix.settings.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - name: linux
+            host: ubuntu-24.04
+          - name: windows
+            host: windows-2025
+    runs-on: ${{ matrix.settings.host }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/opencode
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+        with:
+          install-flags: --frozen-lockfile
+
+      - name: Select artifact version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#resagent-v}"
+          elif [[ -n "$REQUESTED_VERSION" ]]; then
+            VERSION="$REQUESTED_VERSION"
+          else
+            VERSION="0.0.0-resagent-${GITHUB_SHA:0:12}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$ ]]; then
+            echo "Invalid artifact version: $VERSION" >&2
+            exit 1
+          fi
+          echo "OPENCODE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Typecheck
+        run: bun typecheck
+
+      - name: Build native archive
+        run: bun run script/build.ts --single --archive --skip-install --skip-embed-web-ui
+
+      - name: Verify archive and extracted binary
+        run: bun run verify:resagent-release
+
+      - name: Select compiled binary for E2E
+        run: |
+          BINARY="$(find dist -type f -path '*/bin/resagent*' | head -n 1)"
+          test -n "$BINARY"
+          ROOT="$PWD"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ROOT="$(pwd -W)"
+          fi
+          echo "RESAGENT_TEST_BINARY=$ROOT/$BINARY" >> "$GITHUB_ENV"
+
+      - name: Run packaged five-stage research E2E
+        run: bun test test/cli/research-process.test.ts --timeout 90000
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: resagent-native-${{ matrix.settings.name }}-${{ runner.arch }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            packages/opencode/dist/*.zip
+            packages/opencode/dist/*.tar.gz
+            packages/opencode/dist/SHA256SUMS
+
+  publish:
+    name: publish native release
+    if: github.ref_type == 'tag'
+    needs: native
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # Required to create the tagged release and upload its assets.
+    steps:
+      - name: Download native artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: resagent-native-*
+          path: artifacts
+
+      - name: Assemble release assets
+        run: |
+          mkdir release
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp '{}' release/ \;
+          cd release
+          sha256sum resagent-* > SHA256SUMS
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          gh release upload "$GITHUB_REF_NAME" release/* --clobber

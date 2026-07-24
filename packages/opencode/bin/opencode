@@ -43,13 +43,14 @@ function run(target) {
   })
 }
 
-const envPath = process.env.OPENCODE_BIN_PATH
+const resagent = process.env.RESAGENT_LAUNCH === "1"
+const envPath = process.env.RESAGENT_BIN_PATH || process.env.OPENCODE_BIN_PATH
 
 const scriptPath = fs.realpathSync(__filename)
 const scriptDir = path.dirname(scriptPath)
 
 //
-const cached = path.join(scriptDir, ".opencode")
+const cached = path.join(scriptDir, resagent ? ".resagent" : ".opencode")
 
 const platformMap = {
   darwin: "darwin",
@@ -70,8 +71,8 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "opencode-" + platform + "-" + arch
-const binary = platform === "windows" ? "opencode.exe" : "opencode"
+const base = (resagent ? "resagent-" : "opencode-") + platform + "-" + arch
+const binary = platform === "windows" ? (resagent ? "resagent.exe" : "opencode.exe") : resagent ? "resagent" : "opencode"
 
 function supportsAvx2() {
   if (arch !== "x64") return false
@@ -189,7 +190,7 @@ function findBinary(startDir) {
 const resolved = envPath || (fs.existsSync(cached) ? cached : findBinary(scriptDir))
 if (!resolved) {
   console.error(
-    "It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing " +
+    `It seems that your package manager failed to install the right version of the ${resagent ? "ResAgent" : "opencode"} CLI for your platform. You can try manually installing ` +
       names.map((n) => `\"${n}\"`).join(" or ") +
       " package",
   )

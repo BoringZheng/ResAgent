@@ -31,6 +31,8 @@ import type {
   SessionsContextOutput,
   SessionsHistoryInput,
   SessionsHistoryOutput,
+  SessionsResearchInput,
+  SessionsResearchOutput,
   SessionsEventsInput,
   SessionsEventsOutput,
   SessionsInterruptInput,
@@ -458,6 +460,18 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ),
+      research: (input: SessionsResearchInput, requestOptions?: RequestOptions) =>
+        request<{ readonly data: SessionsResearchOutput }>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/research`,
+            body: { question: input["question"], profile: input["profile"], path: input["path"] },
+            successStatus: 200,
+            declaredStatuses: [400, 409, 404, 500, 401],
+            empty: false,
+          },
+          requestOptions,
+        ).then((value) => value.data),
       events: (input: SessionsEventsInput, requestOptions?: RequestOptions): AsyncIterable<SessionsEventsOutput> =>
         sse<SessionsEventsOutput>(
           {

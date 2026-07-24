@@ -4,6 +4,7 @@ import { $ } from "bun"
 import path from "path"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
+import { BlobReader, BlobWriter, ZipWriter } from "@zip.js/zip.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -20,8 +21,10 @@ const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
+const archiveFlag = Script.release || process.argv.includes("--archive")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
+const distributionName = "resagent"
 
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
@@ -86,19 +89,6 @@ const allTargets: {
     avx2: false,
   },
   {
-    os: "darwin",
-    arch: "arm64",
-  },
-  {
-    os: "darwin",
-    arch: "x64",
-  },
-  {
-    os: "darwin",
-    arch: "x64",
-    avx2: false,
-  },
-  {
     os: "win32",
     arch: "arm64",
   },
@@ -134,6 +124,10 @@ const targets = singleFlag
     })
   : allTargets
 
+if (targets.length === 0) {
+  throw new Error(`Unsupported ResAgent release platform: ${process.platform}-${process.arch}`)
+}
+
 await $`rm -rf dist`
 
 const binaries: Record<string, string> = {}
@@ -144,7 +138,7 @@ if (!skipInstall) {
 }
 for (const item of targets) {
   const name = [
-    pkg.name,
+    distributionName,
     // changing to win32 flags npm for some reason
     item.os === "win32" ? "windows" : item.os,
     item.arch,
@@ -174,9 +168,9 @@ for (const item of targets) {
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      target: name.replace(pkg.name, "bun") as any,
-      outfile: `dist/${name}/bin/opencode`,
-      execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
+      target: name.replace(distributionName, "bun") as any,
+      outfile: `dist/${name}/bin/${distributionName}`,
+      execArgv: [`--user-agent=${distributionName}/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
     files: {
@@ -197,13 +191,14 @@ for (const item of targets) {
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
+      "process.env.RESAGENT_DISTRIBUTION": "'1'",
       ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),
     },
   })
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/opencode`
+    const binaryPath = `dist/${name}/bin/${distributionName}`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
@@ -232,15 +227,36 @@ for (const item of targets) {
   binaries[name] = Script.version
 }
 
-if (Script.release) {
+if (archiveFlag) {
+  const archives: string[] = []
   for (const key of Object.keys(binaries)) {
     if (key.includes("linux")) {
       await $`tar -czf ../../${key}.tar.gz *`.cwd(`dist/${key}/bin`)
+      archives.push(`dist/${key}.tar.gz`)
     } else {
-      await $`zip -r ../../${key}.zip *`.cwd(`dist/${key}/bin`)
+      await zipDirectory(`dist/${key}/bin`, `dist/${key}.zip`)
+      archives.push(`dist/${key}.zip`)
     }
   }
-  await $`gh release upload v${Script.version} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
+  const checksums = await Promise.all(
+    archives.toSorted().map(async (archive) => {
+      const digest = new Bun.CryptoHasher("sha256").update(await Bun.file(archive).arrayBuffer()).digest("hex")
+      return `${digest}  ${path.basename(archive)}`
+    }),
+  )
+  await Bun.write("dist/SHA256SUMS", `${checksums.join("\n")}\n`)
+  if (Script.release)
+    await $`gh release upload v${Script.version} ./dist/*.zip ./dist/*.tar.gz ./dist/SHA256SUMS --clobber --repo ${process.env.GH_REPO}`
+}
+
+async function zipDirectory(directory: string, output: string) {
+  const writer = new ZipWriter(new BlobWriter("application/zip"))
+  for await (const name of new Bun.Glob("*").scan({ cwd: directory })) {
+    await writer.add(name, new BlobReader(Bun.file(path.join(directory, name))), {
+      executable: true,
+    })
+  }
+  await Bun.write(output, await writer.close())
 }
 
 export { binaries }

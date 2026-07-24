@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+
+process.env.RESAGENT_LAUNCH = "1"
+require("./opencode")

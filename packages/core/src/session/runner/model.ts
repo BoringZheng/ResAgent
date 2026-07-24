@@ -71,14 +71,42 @@ export type Error =
   | UnsupportedApiError
   | Integration.AuthorizationError
 
+export interface Resolved {
+  readonly model: Model
+  readonly ref: ModelV2.Ref
+}
+
 export interface Interface {
-  readonly resolve: (session: SessionSchema.Info) => Effect.Effect<Model, Error>
+  readonly resolve: (session: SessionSchema.Info) => Effect.Effect<Resolved, Error>
+  readonly resolveRef: (ref: ModelV2.Ref) => Effect.Effect<Resolved, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionRunnerModel") {}
 
 /** Test or embedding seam for supplying a model resolver directly. */
-export const layerWith = (resolve: Interface["resolve"]) => Layer.succeed(Service, Service.of({ resolve }))
+export const layerWith = (
+  resolve: (session: SessionSchema.Info) => Effect.Effect<Model, Error>,
+  resolveRef?: (ref: ModelV2.Ref) => Effect.Effect<Model, Error>,
+) =>
+  Layer.succeed(
+    Service,
+    Service.of({
+      resolve: (session) =>
+        resolve(session).pipe(
+          Effect.map((model) => ({
+            model,
+            ref: session.model ?? {
+              providerID: ProviderV2.ID.make(model.provider),
+              id: ModelV2.ID.make(model.id),
+            },
+          })),
+        ),
+      resolveRef: (ref) =>
+        (resolveRef?.(ref) ?? Effect.die("Explicit model resolution is not available in this test layer")).pipe(
+          Effect.map((model) => ({ model, ref })),
+        ),
+    }),
+  )
 
 const apiKey = (model: ModelV2.Info, credential?: Credential.Value) => {
   if (credential?.type === "key") return Auth.value(credential.key)
@@ -169,8 +197,18 @@ export const fromCatalogModel = (
   )
 }
 
+export const resolveRef = (ref: ModelV2.Ref, model: ModelV2.Info, credential?: Credential.Value) =>
+  withVariant(model, ref.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
+
 export const resolve = (session: SessionSchema.Info, model: ModelV2.Info, credential?: Credential.Value) =>
-  withVariant(model, session.model?.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
+  resolveRef(
+    session.model ?? {
+      providerID: model.providerID,
+      id: model.id,
+    },
+    model,
+    credential,
+  )
 
 export const supported = (model: ModelV2.Info) =>
   model.api.type === "aisdk" &&
@@ -184,7 +222,35 @@ export const locationLayer = Layer.effect(
   Effect.gen(function* () {
     const catalog = yield* Catalog.Service
     const integrations = yield* Integration.Service
+    const explicit = Effect.fn("SessionRunnerModel.resolveRef")(function* (ref: ModelV2.Ref) {
+      const selected = (yield* catalog.model.available()).find(
+        (model) => model.providerID === ref.providerID && model.id === ref.id,
+      )
+      if (!selected)
+        return yield* new ModelUnavailableError({
+          providerID: ref.providerID,
+          modelID: ref.id,
+        })
+      const provider = yield* catalog.provider.get(selected.providerID)
+      const connection = yield* integrations.connection.active(
+        provider?.integrationID ?? Integration.ID.make(selected.providerID),
+      )
+      const model = yield* resolveRef(
+        ref,
+        selected,
+        connection ? yield* integrations.connection.resolve(connection) : undefined,
+      )
+      return {
+        model,
+        ref: {
+          providerID: selected.providerID,
+          id: selected.id,
+          variant: ref.variant,
+        },
+      }
+    })
     return Service.of({
+      resolveRef: explicit,
       resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session) {
         // Location plugins populate and filter the catalog asynchronously during layer startup.
         const defaultModel = session.model ? undefined : yield* catalog.model.default()
@@ -201,15 +267,11 @@ export const locationLayer = Layer.effect(
             modelID: session.model.id,
           })
         if (!selected) return yield* new ModelNotSelectedError({ sessionID: session.id })
-        const provider = yield* catalog.provider.get(selected.providerID)
-        const connection = yield* integrations.connection.active(
-          provider?.integrationID ?? Integration.ID.make(selected.providerID),
-        )
-        return yield* resolve(
-          session,
-          selected,
-          connection ? yield* integrations.connection.resolve(connection) : undefined,
-        )
+        return yield* explicit({
+          providerID: selected.providerID,
+          id: selected.id,
+          variant: session.model?.variant,
+        })
       }),
     })
   }),

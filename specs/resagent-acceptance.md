@@ -1,0 +1,464 @@
+# ResAgent Implementation and Acceptance Plan
+
+Status: Release candidate; fork CI verification pending
+
+Last reviewed: 2026-07-24
+
+## 1. Delivery Sequence
+
+### Phase 0: Repository Baseline
+
+- [x] Clone OpenCode and preserve upstream history.
+- [x] Create the `resagent` branch.
+- [x] Pin the initial upstream commit in the specification.
+- [x] Install the repository-required Bun version.
+- [x] Complete dependency installation.
+- [x] Record a clean upstream package test baseline.
+
+Current environment note: direct Windows access to the public npm registry is blocked, so a
+temporary WSL CONNECT proxy was used to complete a frozen-lockfile install without changing
+repository registry configuration, dependency versions, or `bun.lock`. Windows and native Linux
+now use the lockfile's `@opentui/core`, `@opentui/keymap`, and `@opentui/solid` `0.4.5`. The
+temporary proxy and staging workspaces were removed after verification.
+
+The final Windows recovery used Bun's hoisted linker because this execution environment rejects
+directory Junction traversal as an untrusted mount point. All package-local links left by the
+interrupted isolated install were quarantined, all eight affected package typechecks passed
+against the hoisted tree, and the quarantine was removed. The final `bun.lock` SHA-256 remained
+`8b4139148b20f53e9a97472a95cff8fe3af7e492714c315151561952c25c8b97`.
+
+### Phase 1: Remote Core
+
+- [x] Add remote host configuration schema.
+- [x] Add alias resolution and immutable Location-scoped host inventory.
+- [x] Add OpenSSH invocation builder.
+- [x] Add per-host concurrency and timeout enforcement.
+- [x] Add `remote_run` canonical tool.
+- [x] Add exact permission resources.
+- [x] Add unit and integration tests.
+
+### Phase 2: Research Core
+
+- [x] Add research profile schema.
+- [x] Add stage-owned provider route selection.
+- [x] Add retryable failure classification and fallback.
+- [x] Add research stage state and provenance.
+- [x] Add Markdown report export.
+- [x] Add deterministic tests with local provider-compatible fixtures.
+
+### Phase 3: Terminal UX
+
+- [x] Add provider route and health display.
+- [x] Add remote host picker and target summary.
+- [x] Add multi-host result renderer with partial-failure states.
+- [x] Add research progress and evidence views.
+- [x] Add report export command.
+- [x] Verify keyboard-only and narrow-terminal behavior.
+
+### Phase 4: Diagnostics and Distribution
+
+- [x] Add `resagent doctor`.
+- [x] Add project branding and upstream attribution.
+- [x] Add install, configuration, migration, and security documentation.
+- [x] Add release scripts and checksums.
+- [x] Add native Linux/Windows release-runner automation.
+- [x] Run the five-stage provider E2E through the compiled release binary.
+- [x] Build and smoke-test the Windows x64 artifact.
+- [x] Build and smoke-test the Linux x64 artifact on a native host.
+- [ ] Validate the final commit on native Linux x64 and Windows x64 release runners.
+
+## 2. Automated E2E Matrix
+
+The E2E harness uses:
+
+- two disposable local OpenSSH servers with different host keys;
+- one unreachable target;
+- two independent local OpenAI-compatible fixture servers;
+- a temporary home directory, config directory, known-hosts file, and SQLite database;
+- no real provider or SSH credentials.
+
+| ID      | Scenario                   | Expected Evidence                                              |
+| ------- | -------------------------- | -------------------------------------------------------------- |
+| E2E-P01 | First provider succeeds    | Selected route and report stage use provider 1                 |
+| E2E-P02 | Retryable provider failure | Provider 2 is selected once within budget                      |
+| E2E-P03 | Authentication failure     | No fallback; actionable error shown                            |
+| E2E-P04 | Both providers unavailable | Route attempts listed; session remains usable                  |
+| E2E-R01 | Execute on one host        | Exact stdout, exit, duration, and alias returned               |
+| E2E-R02 | Execute on two hosts       | Stable input ordering and independent results                  |
+| E2E-R03 | One host times out         | Other host succeeds; timed-out host is explicit                |
+| E2E-R04 | Host key mismatch          | Connection fails before command execution                      |
+| E2E-R05 | Permission rejected        | SSH fixture records zero connections                           |
+| E2E-R06 | Permission corrected       | Original command does not run; corrected prompt continues      |
+| E2E-R07 | Cancellation               | SSH process ends and remaining hosts are cancelled             |
+| E2E-R08 | Large output               | Per-host result is truncated and retained output is bounded    |
+| E2E-R09 | Metacharacters in command  | No local file or process side effect occurs                    |
+| E2E-X01 | Full research run          | Report contains citations, confidence, and execution appendix  |
+| E2E-X02 | Conflicting evidence       | Verification stage records conflict and qualified conclusion   |
+| E2E-X03 | Secret canary              | Canary absent from model output, logs, report, and artifacts   |
+| E2E-U01 | TUI 80x24                  | No overlap; all primary actions keyboard accessible            |
+| E2E-U02 | TUI reconnect              | Session and pending state recover without duplicated execution |
+
+## 3. Review Loop
+
+Every implementation slice follows:
+
+1. Update the relevant specification and acceptance rows.
+2. Implement the smallest complete behavior at an existing package boundary.
+3. Add tests against the real implementation.
+4. Run format, typecheck, focused tests, and relevant broader tests.
+5. Review the diff for:
+   - security invariant violations;
+   - package dependency direction;
+   - error and cancellation behavior;
+   - secret exposure;
+   - Windows and POSIX behavior;
+   - missing tests and user-visible states.
+6. Fix findings before starting the next slice.
+7. Record commands and evidence in the completion audit.
+
+## 4. Documentation Review 1
+
+Date: 2026-07-23
+
+Findings:
+
+1. **Critical:** Treating remote execution as a raw `ssh` shell string would bypass structured target permissions and allow local option injection.
+   Resolution: use a dedicated canonical tool and argument-array invocation.
+2. **Critical:** Reusing the experimental remote workspace credential transfer would expose all configured provider credentials to a remote host.
+   Resolution: keep provider execution local for 1.0 and defer remote workspace mode.
+3. **High:** "Multi-provider" was ambiguous between configuration and automatic failover.
+   Resolution: define ordered role routes, failure classes, safe replay, and retry budgets.
+4. **High:** Multi-host partial failures could be summarized as total success.
+   Resolution: require a typed per-host result and stable ordering.
+5. **High:** Permission prompts could become too broad.
+   Resolution: resource identity includes exact host alias and command.
+6. **Medium:** SSH connection setup could permit forwarding or interactive prompts.
+   Resolution: require batch mode, clear forwarding, no local shell, strict host keys, and explicit timeouts.
+7. **Medium:** The original scope lacked measurable UX acceptance.
+   Resolution: add 80x24 and reconnect E2E scenarios.
+8. **Medium:** The dependency mirror failure could tempt an unreviewed downgrade.
+   Resolution: preserve the lockfile and track the environment issue in Phase 0.
+
+Result: The specification is sufficiently concrete to begin Phase 1. Remote workspace mode remains blocked by a separate security design.
+
+## 5. Documentation Review 2
+
+Date: 2026-07-23
+
+Findings:
+
+1. **High:** The draft referred to a `shell: false` option that is not part of the repository's Effect `ChildProcess.make` usage.
+   Resolution: specify direct `ChildProcess.make("ssh", args, ...)` invocation and test the resulting argument list.
+2. **High:** `ClearAllForwardings` alone did not explicitly disable agent forwarding, X11 forwarding, or local commands.
+   Resolution: add `ForwardAgent=no`, `ForwardX11=no`, and `PermitLocalCommand=no`.
+3. **Medium:** Batch mode did not state the 1.0 password-authentication policy strongly enough.
+   Resolution: add `PasswordAuthentication=no` and keep password-based SSH out of scope.
+4. **Medium:** Layered host config behavior was unspecified.
+   Resolution: later config documents replace an alias as a complete entry, and inventory remains fixed for the Location lifetime.
+
+Result: Phase 1 may begin against the corrected process and config contracts.
+
+## 6. Code Review 1
+
+Date: 2026-07-23
+
+Findings:
+
+1. **High:** A config containing legacy V1 keys and the new `remotes` field would enter V1 migration and silently lose the host inventory.
+   Resolution: add `remotes` to the V1 compatibility schema and preserve it during migration.
+2. **High:** `AppProcessError.command` and OpenSSH stderr may contain configured identity or known-hosts paths.
+   Resolution: never expose the process error command and redact configured sensitive paths from all remote stdout/stderr.
+3. **Medium:** Password authentication was disabled but keyboard-interactive authentication was only indirectly prevented by batch mode.
+   Resolution: add `KbdInteractiveAuthentication=no` to the invariant argument list.
+4. **Medium:** The full monorepo typecheck currently stops on an unchanged enterprise declaration-file syntax error.
+   Resolution: require package-local core typecheck for this slice and retain the monorepo failure as baseline evidence until the upstream file or generated artifact is corrected.
+
+Result: Findings are fixed in the implementation and covered by focused tests.
+
+## 7. Phase 1 Completion Audit
+
+Requirement: Remote host configuration and immutable Location inventory.
+Implementation: `packages/core/src/config/remote.ts`, `packages/core/src/remote.ts`, and the
+top-level V2/V1 compatibility config schemas.
+Automated evidence: config decoding, alias replacement, path expansion, argument construction,
+redaction, and inventory tests pass in `packages/core/test/config/remote.test.ts` and
+`packages/core/test/remote.test.ts`.
+Manual evidence: code review verified that later config documents replace complete aliases and
+that inventory is captured when the Location service is built.
+Residual risk: target-native optional packages remain verified per release host; final fork CI
+evidence is pending.
+
+Requirement: Secure, bounded OpenSSH execution.
+Implementation: direct argument-array invocation with batch mode, disabled forwarding and local
+commands, disabled password and keyboard-interactive authentication, strict host keys by default,
+per-host semaphores, cancellation, timeouts, output limits, and sensitive-path redaction.
+Automated evidence: `packages/core/test/remote.test.ts` covers invariant arguments, timeout,
+cancellation, concurrency, output truncation, and redaction.
+Manual evidence: code review found no shell interpolation or process-error command exposure.
+Residual risk: the final commit still requires release-runner evidence.
+
+Requirement: Canonical multi-host `remote_run` tool and exact authorization.
+Implementation: `packages/core/src/tool/remote-run.ts` resolves and authorizes every
+`<alias> <command>` resource before opening any connection, then returns stable per-host results.
+Automated evidence: `packages/core/test/tool-remote-run.test.ts` covers single and multi-host
+execution, ordering, independent failure, all-before-connect authorization, and conditional tool
+registration.
+Manual evidence: code review verified that permission denial starts zero SSH processes.
+Residual risk: cancellation remains Effect interruption rather than a durable model-visible
+`cancelled` result, matching the canonical tool interruption contract.
+
+Verification run on 2026-07-23:
+
+- `bun typecheck` in `packages/core`: pass.
+- Focused research and remote tests: 32 pass, 0 fail.
+- Full `packages/core` suite: 1115 pass, 7 skip, 2 fail.
+- One broad-suite failure is a load-sensitive five-second timeout in `test/git.test.ts`.
+- The repeatable Windows baseline failure remains:
+  `test/effect/cross-spawn-spawner.test.ts:200` expects unquoted POSIX `echo` output while Windows
+  returns `"hello from stdout"`.
+
+## 8. Phase 2 Completion Audit
+
+Requirement: Durable five-stage research workflow and provenance.
+Implementation: `packages/core/src/config/research.ts`, `packages/core/src/research-route.ts`,
+`packages/core/src/research-run.ts`, and `packages/core/src/research-workflow.ts`.
+Automated evidence: focused research tests, session-runner fallback/restart tests, CLI process
+tests, generated SDK tests, and the public HTTP workflow test pass.
+Manual evidence: review verified one durable provider attempt record per dispatch, safe replay
+gates before fallback, and report paths constrained to the active Location.
+Residual risk: provider protocol coverage currently uses OpenAI-compatible fixture servers;
+Anthropic-compatible fixture transport remains desirable cross-protocol coverage.
+
+Requirement: Provider route classification and fallback.
+Implementation: research stage routes resolve against the Location catalog and retry only
+classified replay-safe failures before assistant output or tool side effects.
+Automated evidence: `packages/opencode/test/server/httpapi-sdk.test.ts` covers first-route success,
+three HTTP 503 attempts followed by fallback, HTTP 401 without fallback, and both routes exhausted
+while the Session remains usable.
+Manual evidence: durable history records the ordered attempts and terminal outcome.
+Residual risk: external providers may classify vendor-specific errors differently from fixtures.
+
+## 9. Phase 3 Completion Audit
+
+Requirement: Research progress, provider route state, and reconnect recovery.
+Implementation: durable history hydration and live event projection in
+`packages/tui/src/context/data.tsx` plus the research sidebar plugin.
+Automated evidence: pagination, in-flight hydration/live-event merging, duplicate event IDs, and
+zero research-start calls during refresh pass in TUI tests.
+Manual evidence: the initial-refresh map race was found during review and fixed before acceptance.
+Residual risk: global SSE reconnect behavior still depends on the inherited SDK event source.
+
+Requirement: Remote target selection and independent result rendering.
+Implementation: remote picker command, per-Session staged target state, target sidebar, and the
+dedicated `remote_run` renderer.
+Automated evidence: command registration, parser tests, dedicated display selection, and rendered
+partial-success/failure/timeout/truncation layouts pass at `80x24` and `120x40`.
+Manual evidence: long aliases, commands, routes, and output remain bounded without overlap.
+Residual risk: mouse expansion is supplementary; keyboard-only command initiation remains through
+the command palette.
+
+## 10. E2E Evidence
+
+Real SSH evidence on Windows OpenSSH:
+
+- `packages/core/test/remote-e2e.test.ts`: 6 pass, 0 fail.
+- Covers two host keys, stable order, unreachable target, timeout, host-key mismatch, large-output
+  truncation, local metacharacter isolation, nonnegative durations and exact exit codes,
+  permission denial/correction with zero connections for the rejected command, successful
+  execution of the subsequent corrected command, in-flight process termination, and no start of
+  the queued second host.
+
+Allowed-host acceptance on 2026-07-23:
+
+- The production `Remote.Service` connected only to the explicitly approved `tor-client` and
+  `tor-hs` aliases and ran a read-only marker plus `uname -s` and `uname -m`.
+- Both hosts returned `ok`, exit code `0`, `Linux`, `x86_64`, and untruncated output while
+  preserving the requested alias order.
+- The same two-host command passed through the canonical `remote_run` registry and permission
+  chain. One exact permission assertion contained only the two `<alias> <command>` resources, and
+  the structured tool result preserved independent per-host status and duration.
+- No `az-*` host or any other SSH target was connected during this acceptance run.
+
+Provider and public API evidence:
+
+- `packages/opencode/test/server/httpapi-sdk.test.ts`: 25 pass, 0 fail; the provider matrix and
+  five-stage SDK workflow pass against independently listening HTTP fixtures.
+- The completed five-stage report contains citation, confidence, limitations, and provider/tool
+  provenance sections.
+- Conflicting collection evidence reaches the verification stage and produces a qualified,
+  conditional conclusion instead of an unqualified answer.
+- Generated clients and OpenAPI contract include `POST /api/session/:sessionID/research`.
+- OpenAPI and CLI unit group: 22 pass, 0 fail.
+
+TUI evidence:
+
+- Focused reconnect, command, parser, and layout group: 30 pass, 0 fail.
+- Production sidebar and remote result JSX render at `80x24` and `120x40`.
+- Full `packages/tui` suite: 204 pass, 1 skip, 1 fail. The remaining failure is the known Windows
+  path-separator expectation where the test expects `~/project` and runtime returns `~\project`.
+
+Secret-canary evidence:
+
+- `packages/opencode/test/cli/research-process.test.ts`: 1 pass, 0 fail.
+- A unique process-environment canary is absent from CLI stdout, progress stderr, and the exported
+  Markdown report.
+- High-confidence secret scans found no actual private-key headers or credential-token patterns in
+  changed source, generated clients, tests, documentation, or the Windows release artifact.
+- No retained logs, reports, or test-result artifacts remain in the workspace after the test run.
+
+## 11. Distribution Audit
+
+Requirement: Standalone branding and attribution.
+Implementation: ResAgent README, standalone wrapper, compiled `resagent` CLI name and artifacts,
+and explicit OpenCode attribution while internal package names remain upstream-compatible.
+Automated evidence: branding unit test and package typecheck pass.
+Residual risk: package-manager publication metadata remains intentionally separate from the
+upstream OpenCode publish automation.
+
+Requirement: Release artifacts and checksums.
+Implementation: `packages/opencode/script/build.ts --archive` emits platform archives and
+`SHA256SUMS`; `packages/opencode/script/verify-release.ts` verifies checksum, member identity,
+executable metadata, extraction, size, and exact version output. The standalone
+`.github/workflows/resagent-release.yml` runs this on native Linux x64 and Windows x64 runners,
+executes the five-stage provider workflow through each compiled binary, and publishes combined
+checksums for `resagent-v*` tags. Pushes to the `resagent` branch and relevant pull requests run
+the same non-publishing native validation matrix, so release evidence can be gathered before
+creating a tag.
+Automated evidence: `bun typecheck` passes in `packages/opencode`; the Windows x64 compiled binary
+and the same binary extracted from its archive both return
+`0.0.0-resagent-202607241132` from `resagent --version`.
+Manual evidence: `resagent-windows-x64.zip` is 51,883,307 bytes and contains
+`resagent.exe` with Unix-compatible executable metadata. `SHA256SUMS` matches an independent
+SHA-256 calculation:
+
+```text
+5c05a1fa23e079510de8dbdb6897fc692a85b24a94ddfeda55e8f2fd80ee55e4  resagent-windows-x64.zip
+```
+
+The compiled `resagent.exe` is 143,405,568 bytes, the archive contains only that member with mode
+`0755`, and an independently extracted copy passed the version smoke test.
+`packages/opencode/test/cli/release-verifier.test.ts` passes 4 tests covering target naming,
+checksum parsing, ZIP member/executable validation, extraction, and exact version execution. With
+`RESAGENT_TEST_BINARY` set to the compiled Windows binary,
+`packages/opencode/test/cli/research-process.test.ts` passes the complete five-stage workflow,
+report export, provenance, progress, and secret-canary assertions.
+
+Native Linux x64 evidence was produced from the same 6,356-file working-tree snapshot on an
+explicitly approved `tor-client` host running Ubuntu 20.04 with
+`Linux 5.4.0-216-generic x86_64`. The snapshot included only tracked and non-ignored working-tree
+files, and its SHA-256 was independently verified before extraction:
+
+```text
+9a40c083a96c0e2bda2dba28c576165422e570b9d079cee97de325b4afc4152d  source.tar.gz
+```
+
+The host installed the frozen lockfile with user-scoped Bun `1.3.14`, Node `24.18.0`, and the
+lockfile's `node-gyp` without modifying the host system. Its 2 GB, no-swap limit killed the remote
+`tsgo` process, so that attempt is not counted as typecheck evidence; the same final source passed
+`packages/opencode` typecheck locally before the snapshot was created. The host then built
+`resagent-linux-x64.tar.gz` and passed the independent release verifier plus the compiled-binary
+five-stage research subprocess E2E. The archive is 50,352,650 bytes, contains only a mode-`0755`
+`resagent` binary of 148,170,880 bytes, and reports the exact accepted version
+`0.0.0-resagent-202607231426`:
+
+```text
+5da80fc656fe321f94a295d984715c0e73e20fb96418dd27707d0f4402b758da  resagent-linux-x64.tar.gz
+```
+
+The verified Linux archive was transferred back through the approved alias, independently
+checksum-verified on Windows, and retained under the ignored `packages/opencode/dist/`
+release-output directory. The remote source, runtime, archive upload, and build workspace were
+removed after verification.
+
+Cross-build contract: one native dependency installation intentionally supplies only that host's
+optional binaries. The release workflow therefore builds one target on each native matrix host
+instead of treating a Windows all-target cross-build as release evidence. No dependency or
+lockfile version was changed.
+
+Residual risk: the final commit has not yet run in the fork's native release workflow. macOS
+release builds are intentionally unsupported. The inherited `.github/workflows/publish.yml`
+remains guarded OpenCode publication automation; standalone ResAgent release artifacts are
+produced by the package build script and are not coupled to the upstream package-manager
+publication flow.
+
+## 12. Final Verification Snapshot
+
+Run on 2026-07-23:
+
+- Core, OpenCode, TUI, protocol, server, client, SDK JavaScript, and schema typechecks: pass.
+- Frozen Windows dependency installation with `@opentui/*` `0.4.5`: pass; `bun.lock` unchanged.
+- Core EventV2, research, remote, runner, and real OpenSSH group: 170 pass, 0 fail.
+- OpenCode HTTP SDK, OpenAPI, CLI, release verifier, manifest, and subprocess group: 54 pass,
+  0 fail.
+- OpenCode server partition: 274 pass, 23 skip, 5 fail. The five isolated plugin/listener timeouts
+  reproduce unchanged in the pinned upstream worktree on this Windows environment.
+- OpenCode CLI partition: 371 pass, 6 skip, 1 fail. The failure is Windows `EPERM` creating a
+  symlink without Developer Mode or elevation.
+- OpenCode tool/session/plugin/util partition: 1041 pass, 20 skip, 1 todo, 7 fail. The failures are
+  one load-sensitive 253 ms versus `<250 ms` assertion, two Windows path-normalization
+  expectations, and four Windows symlink privilege failures.
+- OpenCode ACP/MCP/project/provider/config/effect/LSP partition: 1098 pass, 2 skip, 5 fail,
+  1 error. Four failures plus the error are
+  `test/project/instance-bootstrap.test.ts`; its isolated result is 0 pass, 4 fail, 1 error in both
+  ResAgent and the pinned upstream worktree. The later VCS failure is a cleanup cascade.
+- Remaining OpenCode partitions completed. One EventV2 ownership regression discovered by the
+  workspace tests was fixed; `test/event.test.ts` is 46 pass, 0 fail and the workspace/manifest
+  rerun is 36 pass, 1 Windows-only skip, 0 fail. The only residual failures in those partitions are
+  two Windows snapshot symlink privilege failures.
+- The global AppRuntime includes the V2 event, location, Session, local execution, and research
+  workflow graph. OpenCode typecheck and the real research CLI subprocess pass with this wiring.
+- TUI focused group: 30 pass, 0 fail.
+- Client Promise tests: 7 pass, 0 fail.
+- Schema manifest tests: 3 pass, 0 fail.
+- Research subprocess workflow with secret canary: 1 pass, 0 fail.
+- Windows x64 build, ZIP member metadata, checksum, built-in smoke test, and independent extracted
+  smoke test: pass.
+- Windows compiled-binary five-stage provider E2E: 1 pass, 0 fail.
+- Native Linux x64 frozen dependency installation, archive build, executable metadata, checksum,
+  exact-version smoke test, independent verifier, and compiled-binary five-stage provider E2E:
+  pass. Native typecheck evidence for the final snapshot comes from the local eight-package run
+  because the approved 2 GB build host killed `tsgo`.
+- Release verifier focused tests: 4 pass, 0 fail.
+- Native release workflow: implemented for Linux and Windows, with packaged-binary E2E and tag
+  publication. Final fork CI evidence remains a release gate.
+
+Post-recovery rerun on 2026-07-23:
+
+- Frozen Bun `1.3.14` hoisted installation: pass; 2,371 packages installed; prepare script pass;
+  `bun.lock` unchanged.
+- Prettier across 88 formattable changed files, workflow YAML parsing, `git diff --check`, and
+  high-confidence secret scanning across 90 changed files: pass.
+- Prohibited remote identifiers (`az-*`, the previously used external IP, and retired host
+  aliases) are absent from changed files.
+- Eight affected package typechecks: pass.
+- Core EventV2, research, remote, runner, and local OpenSSH group: 216 pass, 0 fail.
+- OpenCode HTTP SDK, OpenAPI, CLI, release verifier, manifest, and subprocess group: 54 pass,
+  0 fail.
+- TUI focused group: 30 pass, 0 fail; Client Promise tests: 7 pass, 0 fail; Schema manifest tests:
+  3 pass, 0 fail.
+- Production remote service and canonical `remote_run` acceptance on only `tor-client` and
+  `tor-hs`: pass for both hosts.
+- Final-source Windows and native Linux rebuilds, exact-version smoke tests, independent archive
+  verifiers, combined checksums, and compiled five-stage research E2E: pass.
+- Release workflow review on 2026-07-24: `actionlint 1.7.12` with ShellCheck `0.11.0` returned no
+  findings; the native Linux/Windows matrix enforces `--frozen-lockfile` and supplies an explicit
+  repository context to the tag-publishing job.
+- `zizmor 1.28.0` identified template injection in the inherited `setup-bun` action and retained
+  checkout credentials in the native jobs. The action now passes install flags through an
+  environment-backed argument array, checkout persistence is disabled, and stale non-tag runs
+  are cancelled without interrupting tagged releases. The pedantic Zizmor rerun returned no
+  findings, and a semicolon-bearing input remained an inert argument sequence.
+
+## 13. Completion Audit Template
+
+For each checked requirement, record:
+
+```text
+Requirement:
+Implementation:
+Automated evidence:
+Manual evidence:
+Residual risk:
+```
+
+The goal is complete only when every 1.0 requirement has current evidence and the full E2E matrix passes on release artifacts.

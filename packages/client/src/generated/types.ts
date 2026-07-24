@@ -1132,9 +1132,136 @@ export type SessionsHistoryOutput = {
         readonly location?: { readonly directory: string; readonly workspaceID?: string }
         readonly data: { readonly timestamp: number; readonly sessionID: string; readonly messageID: string }
       }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.research.started"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly runID: string
+          readonly profile: string
+          readonly question: string
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.research.stage.started"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly runID: string
+          readonly stage: "plan" | "collect" | "analyze" | "verify" | "report"
+          readonly role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+          readonly route: ReadonlyArray<string>
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.research.provider.attempted"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly runID: string
+          readonly stage: "plan" | "collect" | "analyze" | "verify" | "report"
+          readonly role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+          readonly turnID: string
+          readonly entry: string
+          readonly attempt: number
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.research.provider.attempt.settled"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly runID: string
+          readonly stage: "plan" | "collect" | "analyze" | "verify" | "report"
+          readonly role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+          readonly turnID: string
+          readonly entry: string
+          readonly attempt: number
+          readonly outcome: "succeeded" | "retryable-failure" | "terminal-failure"
+          readonly replaySafe: boolean
+          readonly messageID?: string
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.research.stage.completed"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly runID: string
+          readonly stage: "plan" | "collect" | "analyze" | "verify" | "report"
+          readonly messageID: string
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.research.completed"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly runID: string
+          readonly reportPath?: string
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.research.failed"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly runID: string
+          readonly message: string
+        }
+      }
   >
   readonly hasMore: boolean
 }
+
+export type SessionsResearchInput = {
+  readonly sessionID: { readonly sessionID: string }["sessionID"]
+  readonly question: {
+    readonly question: string
+    readonly profile?: string | undefined
+    readonly path?: string | undefined
+  }["question"]
+  readonly profile?: {
+    readonly question: string
+    readonly profile?: string | undefined
+    readonly path?: string | undefined
+  }["profile"]
+  readonly path?: {
+    readonly question: string
+    readonly profile?: string | undefined
+    readonly path?: string | undefined
+  }["path"]
+}
+
+export type SessionsResearchOutput = { readonly data: { readonly runID: string; readonly reportPath: string } }["data"]
 
 export type SessionsEventsInput = {
   readonly sessionID: { readonly sessionID: string }["sessionID"]
@@ -1589,6 +1716,112 @@ export type SessionsEventsOutput =
       readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
       readonly location?: { readonly directory: string; readonly workspaceID?: string }
       readonly data: { readonly timestamp: number; readonly sessionID: string; readonly messageID: string }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.research.started"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly runID: string
+        readonly profile: string
+        readonly question: string
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.research.stage.started"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly runID: string
+        readonly stage: "plan" | "collect" | "analyze" | "verify" | "report"
+        readonly role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+        readonly route: ReadonlyArray<string>
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.research.provider.attempted"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly runID: string
+        readonly stage: "plan" | "collect" | "analyze" | "verify" | "report"
+        readonly role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+        readonly turnID: string
+        readonly entry: string
+        readonly attempt: number
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.research.provider.attempt.settled"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly runID: string
+        readonly stage: "plan" | "collect" | "analyze" | "verify" | "report"
+        readonly role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+        readonly turnID: string
+        readonly entry: string
+        readonly attempt: number
+        readonly outcome: "succeeded" | "retryable-failure" | "terminal-failure"
+        readonly replaySafe: boolean
+        readonly messageID?: string
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.research.stage.completed"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly runID: string
+        readonly stage: "plan" | "collect" | "analyze" | "verify" | "report"
+        readonly messageID: string
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.research.completed"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly runID: string
+        readonly reportPath?: string
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.research.failed"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly runID: string
+        readonly message: string
+      }
     }
 
 export type SessionsInterruptInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }

@@ -207,11 +207,12 @@ export function withCliFixture<A, E>(
     const spawn = Effect.fn("opencode.spawn")(function* (args: string[], opts?: SpawnOpts) {
       const start = Date.now()
       const timeoutMs = opts?.timeoutMs ?? 30_000
+      const invocation = cliInvocation(args)
       // stdin: "ignore" so the child doesn't see a piped stdin and block
       // on `Bun.stdin.text()` (see src/cli/cmd/run.ts — non-TTY stdin is
       // consumed as the prompt). The old Process.run wrapper defaulted to
       // ignore; ChildProcess.make defaults to pipe, so we set it explicitly.
-      const command = ChildProcess.make("bun", ["run", "--conditions=browser", cliEntry, ...args], {
+      const command = ChildProcess.make(invocation.command, invocation.args, {
         cwd: home,
         env: { ...env, ...opts?.env },
         extendEnv: true,
@@ -281,9 +282,10 @@ export function withCliFixture<A, E>(
     const startRun = Effect.fn("opencode.startRun")(function* (message: string, opts?: RunOpts) {
       const start = Date.now()
       const options = runOpts(opts)
+      const invocation = cliInvocation(runArgs(message, opts))
       const proc = yield* Effect.acquireRelease(
         Effect.sync(() =>
-          Bun.spawn(["bun", "run", "--conditions=browser", cliEntry, ...runArgs(message, opts)], {
+          Bun.spawn([invocation.command, ...invocation.args], {
             cwd: home,
             env: { ...process.env, ...env, ...options?.env },
             stdin: "ignore",
@@ -318,13 +320,14 @@ export function withCliFixture<A, E>(
       argv.push("--port", String(opts?.port ?? 0))
       if (opts?.hostname) argv.push("--hostname", opts.hostname)
       if (opts?.extraArgs) argv.push(...opts.extraArgs)
+      const invocation = cliInvocation(argv)
 
       // Acquire the subprocess; release sends SIGTERM and awaits exit on
       // scope close. Wrapped in Effect.ignore so a flaky kill doesn't surface
       // as a finalizer error during test teardown.
       const proc = yield* Effect.acquireRelease(
         Effect.sync(() =>
-          Bun.spawn(["bun", "run", "--conditions=browser", cliEntry, ...argv], {
+          Bun.spawn([invocation.command, ...invocation.args], {
             cwd: home,
             env: { ...process.env, ...env, ...opts?.env },
             stdout: "pipe",
@@ -389,13 +392,14 @@ export function withCliFixture<A, E>(
       const argv = ["acp"]
       if (opts?.cwd) argv.push("--cwd", opts.cwd)
       if (opts?.extraArgs) argv.push(...opts.extraArgs)
+      const invocation = cliInvocation(argv)
 
       // Acquire the subprocess. Release ends stdin (clean shutdown — ACP exits
       // on stdin EOF) and falls back to SIGTERM if it doesn't exit promptly.
       // Either way we await proc.exited so the test scope doesn't leak.
       const proc = yield* Effect.acquireRelease(
         Effect.sync(() =>
-          Bun.spawn(["bun", "run", "--conditions=browser", cliEntry, ...argv], {
+          Bun.spawn([invocation.command, ...invocation.args], {
             cwd: opts?.cwd ?? home,
             env: { ...process.env, ...env, ...opts?.env },
             stdin: "pipe",
@@ -478,6 +482,12 @@ export function withCliFixture<A, E>(
       ),
     ),
   )
+}
+
+function cliInvocation(args: string[]) {
+  const binary = process.env.RESAGENT_TEST_BINARY
+  if (binary) return { command: binary, args }
+  return { command: "bun", args: ["run", "--conditions=browser", cliEntry, ...args] }
 }
 
 function parseJsonEvents(stdout: string): Array<Record<string, unknown>> {

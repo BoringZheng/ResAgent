@@ -48,6 +48,13 @@ export type Event =
   | EventSessionNextRevertStaged
   | EventSessionNextRevertCleared
   | EventSessionNextRevertCommitted
+  | EventSessionNextResearchStarted
+  | EventSessionNextResearchStageStarted
+  | EventSessionNextResearchProviderAttempted
+  | EventSessionNextResearchProviderAttemptSettled
+  | EventSessionNextResearchStageCompleted
+  | EventSessionNextResearchCompleted
+  | EventSessionNextResearchFailed
   | EventMessagePartDelta
   | EventSessionDiff
   | EventSessionError
@@ -1192,6 +1199,91 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "session.next.research.started"
+        properties: {
+          timestamp: number
+          sessionID: string
+          runID: string
+          profile: string
+          question: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.research.stage.started"
+        properties: {
+          timestamp: number
+          sessionID: string
+          runID: string
+          stage: "plan" | "collect" | "analyze" | "verify" | "report"
+          role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+          route: Array<string>
+        }
+      }
+    | {
+        id: string
+        type: "session.next.research.provider.attempted"
+        properties: {
+          timestamp: number
+          sessionID: string
+          runID: string
+          stage: "plan" | "collect" | "analyze" | "verify" | "report"
+          role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+          turnID: string
+          entry: string
+          attempt: number
+        }
+      }
+    | {
+        id: string
+        type: "session.next.research.provider.attempt.settled"
+        properties: {
+          timestamp: number
+          sessionID: string
+          runID: string
+          stage: "plan" | "collect" | "analyze" | "verify" | "report"
+          role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+          turnID: string
+          entry: string
+          attempt: number
+          outcome: "succeeded" | "retryable-failure" | "terminal-failure"
+          replaySafe: boolean
+          messageID?: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.research.stage.completed"
+        properties: {
+          timestamp: number
+          sessionID: string
+          runID: string
+          stage: "plan" | "collect" | "analyze" | "verify" | "report"
+          messageID: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.research.completed"
+        properties: {
+          timestamp: number
+          sessionID: string
+          runID: string
+          reportPath?: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.research.failed"
+        properties: {
+          timestamp: number
+          sessionID: string
+          runID: string
+          message: string
+        }
+      }
+    | {
+        id: string
         type: "message.part.delta"
         properties: {
           sessionID: string
@@ -1636,6 +1728,13 @@ export type GlobalEvent = {
     | SyncEventSessionNextRevertStaged
     | SyncEventSessionNextRevertCleared
     | SyncEventSessionNextRevertCommitted
+    | SyncEventSessionNextResearchStarted
+    | SyncEventSessionNextResearchStageStarted
+    | SyncEventSessionNextResearchProviderAttempted
+    | SyncEventSessionNextResearchProviderAttemptSettled
+    | SyncEventSessionNextResearchStageCompleted
+    | SyncEventSessionNextResearchCompleted
+    | SyncEventSessionNextResearchFailed
 }
 
 /**
@@ -1947,6 +2046,10 @@ export type Config = {
   }
   provider?: {
     [key: string]: ProviderConfig
+  }
+  research?: ConfigV2Research
+  remotes?: {
+    [key: string]: unknown | ConfigV2RemoteHost
   }
   mcp?: {
     [key: string]:
@@ -2761,6 +2864,13 @@ export type SessionDurableEvent =
   | SessionNextRevertStaged
   | SessionNextRevertCleared
   | SessionNextRevertCommitted
+  | SessionNextResearchStarted
+  | SessionNextResearchStageStarted
+  | SessionNextResearchProviderAttempted
+  | SessionNextResearchProviderAttemptSettled
+  | SessionNextResearchStageCompleted
+  | SessionNextResearchCompleted
+  | SessionNextResearchFailed
 
 export type SessionHistory = {
   data: Array<SessionDurableEvent>
@@ -2892,6 +3002,13 @@ export type V2Event =
   | SessionNextRevertStaged
   | SessionNextRevertCleared
   | SessionNextRevertCommitted
+  | SessionNextResearchStarted
+  | SessionNextResearchStageStarted
+  | SessionNextResearchProviderAttempted
+  | SessionNextResearchProviderAttemptSettled
+  | SessionNextResearchStageCompleted
+  | SessionNextResearchCompleted
+  | SessionNextResearchFailed
   | MessagePartDelta
   | SessionDiff
   | SessionError
@@ -3819,6 +3936,140 @@ export type SyncEventSessionNextRevertCommitted = {
   }
 }
 
+export type SyncEventSessionNextResearchStarted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.research.started.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      runID: string
+      profile: string
+      question: string
+    }
+  }
+}
+
+export type SyncEventSessionNextResearchStageStarted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.research.stage.started.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      runID: string
+      stage: "plan" | "collect" | "analyze" | "verify" | "report"
+      role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+      route: Array<string>
+    }
+  }
+}
+
+export type SyncEventSessionNextResearchProviderAttempted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.research.provider.attempted.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      runID: string
+      stage: "plan" | "collect" | "analyze" | "verify" | "report"
+      role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+      turnID: string
+      entry: string
+      attempt: number
+    }
+  }
+}
+
+export type SyncEventSessionNextResearchProviderAttemptSettled = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.research.provider.attempt.settled.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      runID: string
+      stage: "plan" | "collect" | "analyze" | "verify" | "report"
+      role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+      turnID: string
+      entry: string
+      attempt: number
+      outcome: "succeeded" | "retryable-failure" | "terminal-failure"
+      replaySafe: boolean
+      messageID?: string
+    }
+  }
+}
+
+export type SyncEventSessionNextResearchStageCompleted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.research.stage.completed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      runID: string
+      stage: "plan" | "collect" | "analyze" | "verify" | "report"
+      messageID: string
+    }
+  }
+}
+
+export type SyncEventSessionNextResearchCompleted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.research.completed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      runID: string
+      reportPath?: string
+    }
+  }
+}
+
+export type SyncEventSessionNextResearchFailed = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.research.failed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      runID: string
+      message: string
+    }
+  }
+}
+
 export type ConfigV2ReferenceGit = {
   repository: string
   branch?: string
@@ -3830,6 +4081,35 @@ export type ConfigV2ReferenceLocal = {
   path: string
   description?: string
   hidden?: boolean
+}
+
+export type ConfigV2ResearchProfile = {
+  planner: Array<string>
+  collector: Array<string>
+  analyst: Array<string>
+  verifier: Array<string>
+  writer: Array<string>
+}
+
+export type ConfigV2Research = {
+  default_profile?: string
+  profiles?: {
+    [key: string]: unknown | ConfigV2ResearchProfile
+  }
+}
+
+export type ConfigV2RemoteHost = {
+  host: string
+  user?: string
+  port?: number
+  identity_file?: string
+  known_hosts_file?: string
+  host_key?: "strict" | "accept-new"
+  proxy_jump?: string
+  connect_timeout?: number
+  command_timeout?: number
+  max_concurrency?: number
+  tags?: Array<string>
 }
 
 export type PolicyEffect = "allow" | "deny"
@@ -4764,6 +5044,161 @@ export type SessionNextRevertCommitted = {
     timestamp: number
     sessionID: string
     messageID: string
+  }
+}
+
+export type SessionNextResearchStarted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.research.started"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    profile: string
+    question: string
+  }
+}
+
+export type SessionNextResearchStageStarted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.research.stage.started"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    stage: "plan" | "collect" | "analyze" | "verify" | "report"
+    role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+    route: Array<string>
+  }
+}
+
+export type SessionNextResearchProviderAttempted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.research.provider.attempted"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    stage: "plan" | "collect" | "analyze" | "verify" | "report"
+    role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+    turnID: string
+    entry: string
+    attempt: number
+  }
+}
+
+export type SessionNextResearchProviderAttemptSettled = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.research.provider.attempt.settled"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    stage: "plan" | "collect" | "analyze" | "verify" | "report"
+    role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+    turnID: string
+    entry: string
+    attempt: number
+    outcome: "succeeded" | "retryable-failure" | "terminal-failure"
+    replaySafe: boolean
+    messageID?: string
+  }
+}
+
+export type SessionNextResearchStageCompleted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.research.stage.completed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    stage: "plan" | "collect" | "analyze" | "verify" | "report"
+    messageID: string
+  }
+}
+
+export type SessionNextResearchCompleted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.research.completed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    reportPath?: string
+  }
+}
+
+export type SessionNextResearchFailed = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.research.failed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    message: string
   }
 }
 
@@ -6645,6 +7080,98 @@ export type EventSessionNextRevertCommitted = {
     timestamp: number
     sessionID: string
     messageID: string
+  }
+}
+
+export type EventSessionNextResearchStarted = {
+  id: string
+  type: "session.next.research.started"
+  properties: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    profile: string
+    question: string
+  }
+}
+
+export type EventSessionNextResearchStageStarted = {
+  id: string
+  type: "session.next.research.stage.started"
+  properties: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    stage: "plan" | "collect" | "analyze" | "verify" | "report"
+    role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+    route: Array<string>
+  }
+}
+
+export type EventSessionNextResearchProviderAttempted = {
+  id: string
+  type: "session.next.research.provider.attempted"
+  properties: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    stage: "plan" | "collect" | "analyze" | "verify" | "report"
+    role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+    turnID: string
+    entry: string
+    attempt: number
+  }
+}
+
+export type EventSessionNextResearchProviderAttemptSettled = {
+  id: string
+  type: "session.next.research.provider.attempt.settled"
+  properties: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    stage: "plan" | "collect" | "analyze" | "verify" | "report"
+    role: "planner" | "collector" | "analyst" | "verifier" | "writer"
+    turnID: string
+    entry: string
+    attempt: number
+    outcome: "succeeded" | "retryable-failure" | "terminal-failure"
+    replaySafe: boolean
+    messageID?: string
+  }
+}
+
+export type EventSessionNextResearchStageCompleted = {
+  id: string
+  type: "session.next.research.stage.completed"
+  properties: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    stage: "plan" | "collect" | "analyze" | "verify" | "report"
+    messageID: string
+  }
+}
+
+export type EventSessionNextResearchCompleted = {
+  id: string
+  type: "session.next.research.completed"
+  properties: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    reportPath?: string
+  }
+}
+
+export type EventSessionNextResearchFailed = {
+  id: string
+  type: "session.next.research.failed"
+  properties: {
+    timestamp: number
+    sessionID: string
+    runID: string
+    message: string
   }
 }
 
@@ -11866,6 +12393,58 @@ export type V2SessionHistoryResponses = {
 }
 
 export type V2SessionHistoryResponse = V2SessionHistoryResponses[keyof V2SessionHistoryResponses]
+
+export type V2SessionResearchData = {
+  body: {
+    question: string
+    profile?: string
+    path?: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/research"
+}
+
+export type V2SessionResearchErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+  /**
+   * ConflictError
+   */
+  409: ConflictError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type V2SessionResearchError = V2SessionResearchErrors[keyof V2SessionResearchErrors]
+
+export type V2SessionResearchResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: {
+      runID: string
+      reportPath: string
+    }
+  }
+}
+
+export type V2SessionResearchResponse = V2SessionResearchResponses[keyof V2SessionResearchResponses]
 
 export type V2SessionEventsData = {
   body?: never
