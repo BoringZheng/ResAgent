@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import type { AgentListOutput, ModelDefaultOutput, ModelListOutput, ProviderListOutput } from "@opencode-ai/client/promise"
+import type {
+  AgentListOutput,
+  ModelDefaultOutput,
+  ModelListOutput,
+  ProviderListOutput,
+} from "@opencode-ai/client/promise"
 import { directoryKey, normalizeAgentList, normalizePermissionRequest, normalizeProviderList } from "./utils"
 
 describe("normalizeAgentList", () => {
@@ -98,6 +103,7 @@ describe("normalizeProviderList", () => {
     )
 
     expect(result.connected).toEqual(["openai"])
+    expect(result.defaultModel).toEqual({ providerID: "openai", modelID: "gpt-5" })
     expect(result.default).toEqual({ openai: "gpt-5" })
     expect(result.all.get("openai")?.models["gpt-old"]).toBeUndefined()
     expect(result.all.get("openai")?.models["gpt-5"]).toMatchObject({
@@ -107,6 +113,10 @@ describe("normalizeProviderList", () => {
       cost: { input: 1, output: 2 },
       variants: { high: {} },
     })
+  })
+
+  test("preserves an empty current default", () => {
+    expect(normalizeProviderList([] as ProviderListOutput["data"], [], null).defaultModel).toBeNull()
   })
 })
 
