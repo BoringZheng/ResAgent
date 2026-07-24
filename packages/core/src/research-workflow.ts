@@ -122,6 +122,14 @@ export function prompt(stage: ResearchRun.Stage, question: string) {
   return `[ResAgent research stage: ${stage}]\n\nResearch question:\n${question}\n\nComplete this stage autonomously. Do not ask the user questions or wait for user input.\n\n${instructions[stage]}`
 }
 
+export function stageOutputMessageID(run: ResearchRun.Info, stage: ResearchRun.Stage) {
+  const item = run.stages.find((entry) => entry.stage === stage)
+  return (
+    item?.attempts.findLast((attempt) => attempt.status === "succeeded" && attempt.messageID !== undefined)
+      ?.messageID ?? item?.messageID
+  )
+}
+
 export function render(input: {
   readonly run: ResearchRun.Info
   readonly outputs: ReadonlyArray<{ readonly stage: ResearchRun.Stage; readonly message: SessionMessage.Assistant }>
@@ -227,29 +235,23 @@ const layer = Layer.effect(
                   role: item.role,
                   route,
                 })
-                const admitted = yield* sessions.prompt({
+                yield* sessions.prompt({
                   sessionID: input.sessionID,
                   prompt: Prompt.make({ text: prompt(item.stage, started.question) }),
                   resume: false,
                   researchRunID: started.id,
                 })
                 yield* sessions.resume(input.sessionID)
-                const context = yield* sessions.context(input.sessionID)
-                const boundary = context.findIndex((message) => message.id === admitted.id)
-                if (boundary < 0)
-                  return yield* new StageFailedError({
-                    stage: item.stage,
-                    message: "Stage prompt was not promoted into session history.",
-                  })
-                const following = context.slice(boundary + 1)
-                const nextUser = following.findIndex((message) => message.type === "user")
-                const assistant = (nextUser < 0 ? following : following.slice(0, nextUser)).findLast(
-                  (message): message is SessionMessage.Assistant => message.type === "assistant",
-                )
+                const current = yield* research.current(input.sessionID)
+                const messageID = current ? stageOutputMessageID(current, item.stage) : undefined
+                const message = messageID
+                  ? yield* sessions.message({ sessionID: input.sessionID, messageID })
+                  : undefined
+                const assistant = message?.type === "assistant" ? message : undefined
                 if (!assistant)
                   return yield* new StageFailedError({
                     stage: item.stage,
-                    message: "Provider turn completed without an assistant message.",
+                    message: "Provider turn completed without a durable assistant message.",
                   })
                 if (assistant.finish === "error")
                   return yield* new StageFailedError({

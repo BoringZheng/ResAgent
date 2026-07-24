@@ -77,6 +77,12 @@ describe("ResearchWorkflow", () => {
     expect(ResearchWorkflow.prompt("report", "Why?")).toContain("final Markdown report")
   })
 
+  test("selects the durable output from the final successful provider turn", () => {
+    expect(ResearchWorkflow.stageOutputMessageID(run, "plan")).toBe(SessionMessage.ID.make("msg_plan"))
+    expect(ResearchWorkflow.stageOutputMessageID(run, "report")).toBe(SessionMessage.ID.make("msg_report"))
+    expect(ResearchWorkflow.stageOutputMessageID(run, "collect")).toBeUndefined()
+  })
+
   test("renders writer output and durable provenance", () => {
     expect(
       ResearchWorkflow.render({
