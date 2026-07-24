@@ -1,6 +1,6 @@
 # ResAgent Implementation and Acceptance Plan
 
-Status: Release candidate; fork CI verification pending
+Status: Accepted; fork CI verified on native Linux x64 and Windows x64
 
 Last reviewed: 2026-07-24
 
@@ -65,7 +65,7 @@ against the hoisted tree, and the quarantine was removed. The final `bun.lock` S
 - [x] Run the five-stage provider E2E through the compiled release binary.
 - [x] Build and smoke-test the Windows x64 artifact.
 - [x] Build and smoke-test the Linux x64 artifact on a native host.
-- [ ] Validate the final commit on native Linux x64 and Windows x64 release runners.
+- [x] Validate the final commit on native Linux x64 and Windows x64 release runners.
 
 ## 2. Automated E2E Matrix
 
@@ -324,8 +324,31 @@ executes the five-stage provider workflow through each compiled binary, and publ
 checksums for `resagent-v*` tags. Pushes to the `resagent` branch and relevant pull requests run
 the same non-publishing native validation matrix, so release evidence can be gathered before
 creating a tag.
-Automated evidence: `bun typecheck` passes in `packages/opencode`; the Windows x64 compiled binary
-and the same binary extracted from its archive both return
+Automated evidence: fork workflow run
+`https://github.com/BoringZheng/ResAgent/actions/runs/30064679805` validated commit
+`9ff32c55d0adf70fca0d3f89328cc882dd9a191e` on native `ubuntu-24.04` and `windows-2025`
+x64 runners. Both jobs passed the package typecheck, native archive build, archive and extracted
+binary verifier, exact-version smoke test, compiled-binary five-stage research E2E, and artifact
+upload. Each compiled-binary E2E completed with 1 pass and 0 fail.
+
+The accepted fork artifacts both report `0.0.0-resagent-9ff32c55d0ad`. Independent downloads and
+checksum calculations on Windows matched their `SHA256SUMS`:
+
+```text
+b61e60ef5dbd1180cd185741c42e9c184d473048aa74d987c08614ac9229d214  resagent-linux-x64.tar.gz
+02754d33eafa65bc2a2a5f43d574dffc98b6231ba40990cd9178a8e2a0573f75  resagent-windows-x64.zip
+```
+
+`resagent-linux-x64.tar.gz` is 49,973,500 bytes and contains one mode-`0755` `resagent` binary of
+147,224,704 bytes. The extracted binary SHA-256 is
+`51714f888a15645908489ccaf97045850905cf3f3c49b54862d8d5a2b27576ba`.
+`resagent-windows-x64.zip` is 51,610,679 bytes and contains one executable `resagent.exe` of
+142,990,336 bytes. The extracted binary SHA-256 is
+`9ef339eb7c0e64be18dd5705a40c0c7813cf808372655c821d58046a4df256b7`, and the independently
+extracted Windows binary returned the accepted version locally.
+
+Pre-CI local evidence: `bun typecheck` passes in `packages/opencode`; the Windows x64 compiled
+binary and the same binary extracted from its archive both return
 `0.0.0-resagent-202607241132` from `resagent --version`.
 Manual evidence: `resagent-windows-x64.zip` is 51,883,307 bytes and contains
 `resagent.exe` with Unix-compatible executable metadata. `SHA256SUMS` matches an independent
@@ -375,11 +398,11 @@ optional binaries. The release workflow therefore builds one target on each nati
 instead of treating a Windows all-target cross-build as release evidence. No dependency or
 lockfile version was changed.
 
-Residual risk: the final commit has not yet run in the fork's native release workflow. macOS
-release builds are intentionally unsupported. The inherited `.github/workflows/publish.yml`
-remains guarded OpenCode publication automation; standalone ResAgent release artifacts are
-produced by the package build script and are not coupled to the upstream package-manager
-publication flow.
+Residual risk: tag publication is intentionally deferred until an explicit `resagent-v*` release
+tag is created; the accepted non-tag run correctly skipped the publish job. macOS release builds
+are intentionally unsupported. The inherited `.github/workflows/publish.yml` remains guarded
+OpenCode publication automation; standalone ResAgent release artifacts are produced by the
+package build script and are not coupled to the upstream package-manager publication flow.
 
 ## 12. Final Verification Snapshot
 
@@ -420,7 +443,8 @@ Run on 2026-07-23:
   because the approved 2 GB build host killed `tsgo`.
 - Release verifier focused tests: 4 pass, 0 fail.
 - Native release workflow: implemented for Linux and Windows, with packaged-binary E2E and tag
-  publication. Final fork CI evidence remains a release gate.
+  publication. Fork run `30064679805` passed both native jobs for final implementation commit
+  `9ff32c55d0adf70fca0d3f89328cc882dd9a191e`.
 
 Post-recovery rerun on 2026-07-23:
 
@@ -448,6 +472,21 @@ Post-recovery rerun on 2026-07-23:
   environment-backed argument array, checkout persistence is disabled, and stale non-tag runs
   are cancelled without interrupting tagged releases. The pedantic Zizmor rerun returned no
   findings, and a semicolon-bearing input remained an inert argument sequence.
+
+Fork CI acceptance on 2026-07-24:
+
+- Workflow run `30064679805`, attempt 1, completed successfully for exact commit
+  `9ff32c55d0adf70fca0d3f89328cc882dd9a191e`.
+- Native Linux job `89393213953`: typecheck, archive build, release verifier, exact-version smoke
+  test, compiled-binary five-stage E2E, and artifact upload passed.
+- Native Windows job `89393213933`: typecheck, archive build, release verifier, exact-version
+  smoke test, compiled-binary five-stage E2E, and artifact upload passed.
+- Linux artifact: `resagent-linux-x64.tar.gz`, 49,973,500 bytes,
+  SHA-256 `b61e60ef5dbd1180cd185741c42e9c184d473048aa74d987c08614ac9229d214`.
+- Windows artifact: `resagent-windows-x64.zip`, 51,610,679 bytes,
+  SHA-256 `02754d33eafa65bc2a2a5f43d574dffc98b6231ba40990cd9178a8e2a0573f75`.
+- Both extracted binaries reported `0.0.0-resagent-9ff32c55d0ad`; both packaged-binary E2E jobs
+  completed with 1 pass and 0 fail.
 
 ## 13. Completion Audit Template
 
