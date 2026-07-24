@@ -75,12 +75,32 @@ describe("ResearchWorkflow", () => {
     expect(ResearchWorkflow.prompt("collect", "Why?")).toContain("Stop using tools once you have sufficient evidence")
     expect(ResearchWorkflow.prompt("verify", "Why?")).toContain("Challenge unsupported claims")
     expect(ResearchWorkflow.prompt("report", "Why?")).toContain("final Markdown report")
+    expect(
+      ResearchWorkflow.prompt("report", "Why?", [
+        { stage: "plan", message: assistant("msg_prior", "planner", "model", "Prior plan") },
+      ]),
+    ).toContain("Prior plan")
   })
 
   test("selects the durable output from the final successful provider turn", () => {
     expect(ResearchWorkflow.stageOutputMessageID(run, "plan")).toBe(SessionMessage.ID.make("msg_plan"))
     expect(ResearchWorkflow.stageOutputMessageID(run, "report")).toBe(SessionMessage.ID.make("msg_report"))
     expect(ResearchWorkflow.stageOutputMessageID(run, "collect")).toBeUndefined()
+  })
+
+  test("rejects tool protocol text as a stage result", () => {
+    expect(
+      ResearchWorkflow.usableStageOutput(
+        "report",
+        assistant("msg_protocol", "writer", "model", "<｜｜DSML｜｜tool_calls>listdir</｜｜DSML｜｜tool_calls>"),
+      ),
+    ).toBeFalse()
+    expect(
+      ResearchWorkflow.usableStageOutput(
+        "report",
+        assistant("msg_markdown", "writer", "model", "# Result\n\nSupported conclusion."),
+      ),
+    ).toBeTrue()
   })
 
   test("renders writer output and durable provenance", () => {

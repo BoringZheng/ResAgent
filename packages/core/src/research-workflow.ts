@@ -107,19 +107,43 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ResearchWorkflow") {}
 
-export function prompt(stage: ResearchRun.Stage, question: string) {
+type StageOutput = {
+  readonly stage: ResearchRun.Stage
+  readonly message: SessionMessage.Assistant
+  readonly messages?: ReadonlyArray<SessionMessage.Assistant>
+}
+
+export function prompt(stage: ResearchRun.Stage, question: string, outputs: ReadonlyArray<StageOutput> = []) {
   const instructions = {
-    plan: "Produce a concise research plan with subquestions, evidence requirements, and target source types.",
+    plan: "Produce a concise research plan with subquestions, evidence requirements, and target source types. Return the plan directly instead of writing it to a file.",
     collect:
-      "Collect evidence using available tools. Preserve source URLs, file paths, remote host aliases, commands, and important output details. Stop using tools once you have sufficient evidence and return the evidence summary.",
+      "Collect evidence using available tools. Preserve source URLs, file paths, remote host aliases, commands, and important output details. Do not write the evidence to a file. Stop using tools once you have sufficient evidence and return the complete evidence summary directly.",
     analyze:
       "Analyze the collected evidence, normalize comparable facts, and identify material conflicts or uncertainty.",
     verify:
       "Challenge unsupported claims, check conflicting evidence, and state which conclusions remain uncertain or conditional.",
     report:
-      "Write the final Markdown report with conclusions, citations, confidence notes, limitations, and no surrounding code fence.",
+      "Write the final Markdown report with conclusions, citations, confidence notes, limitations, and no surrounding code fence. The report must directly answer the research question.",
   } satisfies Record<ResearchRun.Stage, string>
-  return `[ResAgent research stage: ${stage}]\n\nResearch question:\n${question}\n\nComplete this stage autonomously. Do not ask the user questions or wait for user input.\n\n${instructions[stage]}`
+  const prior = outputs
+    .map((output) => `## ${output.stage}\n\n${assistantText(output.message).slice(0, 12_000)}`)
+    .join("\n\n")
+  const mode =
+    stage === "collect"
+      ? "Use only evidence-gathering tools. Return the stage result as Markdown text after gathering enough evidence."
+      : "Tools are unavailable for this stage. Return the stage result directly as Markdown text. Do not emit tool-call markup, XML, DSML, JSON protocols, or requests to read or write files."
+  return [
+    `[ResAgent research stage: ${stage}]`,
+    "",
+    "Research question:",
+    question,
+    "",
+    "Complete this stage autonomously. Do not ask the user questions or wait for user input.",
+    mode,
+    "",
+    instructions[stage],
+    ...(prior ? ["", "Prior stage results:", "", prior] : []),
+  ].join("\n")
 }
 
 export function stageOutputMessageID(run: ResearchRun.Info, stage: ResearchRun.Stage) {
@@ -130,23 +154,24 @@ export function stageOutputMessageID(run: ResearchRun.Info, stage: ResearchRun.S
   )
 }
 
-export function render(input: {
-  readonly run: ResearchRun.Info
-  readonly outputs: ReadonlyArray<{ readonly stage: ResearchRun.Stage; readonly message: SessionMessage.Assistant }>
-}) {
-  const report = input.outputs
-    .find((output) => output.stage === "report")
-    ?.message.content.filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join("\n\n")
-    .trim()
+export function usableStageOutput(stage: ResearchRun.Stage, message: SessionMessage.Assistant) {
+  const text = assistantText(message).trim()
+  if (!text || /\bdsml\b|tool_calls|<tool-call|<invoke\b/i.test(text)) return false
+  return true
+}
+
+export function render(input: { readonly run: ResearchRun.Info; readonly outputs: ReadonlyArray<StageOutput> }) {
+  const reportOutput = input.outputs.find((output) => output.stage === "report")
+  const report = reportOutput ? assistantText(reportOutput.message).trim() : undefined
   if (!report) return
   const provenance = input.outputs.map((output) => {
     const stage = input.run.stages.find((item) => item.stage === output.stage)
     const attempts = stage?.attempts.length
       ? stage.attempts.map((attempt) => `  - ${attempt.attempt}: \`${attempt.entry}\``).join("\n")
       : "  - None recorded"
-    const tools = output.message.content.filter((part) => part.type === "tool")
+    const tools = (output.messages ?? [output.message]).flatMap((message) =>
+      message.content.filter((part) => part.type === "tool"),
+    )
     const toolLines = tools.length
       ? tools
           .map((tool) => {
@@ -180,6 +205,13 @@ export function render(input: {
   ].join("\n")
 }
 
+function assistantText(message: SessionMessage.Assistant) {
+  return message.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n")
+}
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -188,6 +220,44 @@ const layer = Layer.effect(
     const locations = yield* LocationServiceMap.Service
     const db = (yield* Database.Service).db
     const locks = KeyedMutex.makeUnsafe<SessionSchema.ID>()
+
+    const stageOutput = Effect.fn("ResearchWorkflow.stageOutput")(function* (
+      sessionID: SessionSchema.ID,
+      stage: ResearchRun.Stage,
+    ) {
+      const current = yield* research.current(sessionID)
+      const messageID = current ? stageOutputMessageID(current, stage) : undefined
+      const message = messageID ? yield* sessions.message({ sessionID, messageID }) : undefined
+      if (message?.type !== "assistant")
+        return yield* new StageFailedError({
+          stage,
+          message: "Provider turn completed without a durable assistant message.",
+        })
+      if (message.finish === "error")
+        return yield* new StageFailedError({
+          stage,
+          message: message.error?.message ?? "Provider turn failed.",
+        })
+      return message
+    })
+
+    const stageMessages = Effect.fn("ResearchWorkflow.stageMessages")(function* (
+      sessionID: SessionSchema.ID,
+      run: ResearchRun.Info,
+      stage: ResearchRun.Stage,
+    ) {
+      const messageIDs =
+        run.stages
+          .find((item) => item.stage === stage)
+          ?.attempts.flatMap((attempt) =>
+            attempt.status === "succeeded" && attempt.messageID ? [attempt.messageID] : [],
+          ) ?? []
+      return yield* Effect.forEach(messageIDs, (messageID) =>
+        sessions
+          .message({ sessionID, messageID })
+          .pipe(Effect.map((message) => (message?.type === "assistant" ? message : undefined))),
+      ).pipe(Effect.map((messages) => messages.filter((message) => message !== undefined)))
+    })
 
     const run = Effect.fn("ResearchWorkflow.run")(function* (input: {
       readonly sessionID: SessionSchema.ID
@@ -223,7 +293,7 @@ const layer = Layer.effect(
               profile: selected.name,
               question: input.question.trim(),
             })
-            const outputs: Array<{ readonly stage: ResearchRun.Stage; readonly message: SessionMessage.Assistant }> = []
+            const outputs: StageOutput[] = []
             const workflow = Effect.gen(function* () {
               for (const item of stages) {
                 const route = selected.profile[item.role]
@@ -235,30 +305,34 @@ const layer = Layer.effect(
                   role: item.role,
                   route,
                 })
-                yield* sessions.prompt({
-                  sessionID: input.sessionID,
-                  prompt: Prompt.make({ text: prompt(item.stage, started.question) }),
-                  resume: false,
-                  researchRunID: started.id,
+                let assistant: SessionMessage.Assistant | undefined
+                for (const correction of item.stage === "collect" ? [false] : [false, true]) {
+                  yield* sessions.prompt({
+                    sessionID: input.sessionID,
+                    prompt: Prompt.make({
+                      text: correction
+                        ? `${prompt(item.stage, started.question, outputs)}\n\nThe previous response was not a usable stage result. Correct it now and return only the requested Markdown text.`
+                        : prompt(item.stage, started.question, outputs),
+                    }),
+                    resume: false,
+                    researchRunID: started.id,
+                  })
+                  yield* sessions.resume(input.sessionID)
+                  assistant = yield* stageOutput(input.sessionID, item.stage)
+                  if (usableStageOutput(item.stage, assistant)) break
+                }
+                if (!assistant || !usableStageOutput(item.stage, assistant))
+                  return yield* new StageFailedError({
+                    stage: item.stage,
+                    message: "Provider returned tool protocol or insufficient Markdown instead of a stage result.",
+                  })
+                const current = (yield* research.current(input.sessionID))!
+                const messages = yield* stageMessages(input.sessionID, current, item.stage)
+                outputs.push({
+                  stage: item.stage,
+                  message: assistant,
+                  ...(messages.length > 0 ? { messages } : {}),
                 })
-                yield* sessions.resume(input.sessionID)
-                const current = yield* research.current(input.sessionID)
-                const messageID = current ? stageOutputMessageID(current, item.stage) : undefined
-                const message = messageID
-                  ? yield* sessions.message({ sessionID: input.sessionID, messageID })
-                  : undefined
-                const assistant = message?.type === "assistant" ? message : undefined
-                if (!assistant)
-                  return yield* new StageFailedError({
-                    stage: item.stage,
-                    message: "Provider turn completed without a durable assistant message.",
-                  })
-                if (assistant.finish === "error")
-                  return yield* new StageFailedError({
-                    stage: item.stage,
-                    message: assistant.error?.message ?? "Provider turn failed.",
-                  })
-                outputs.push({ stage: item.stage, message: assistant })
                 yield* research.completeStage({
                   sessionID: input.sessionID,
                   runID: started.id,

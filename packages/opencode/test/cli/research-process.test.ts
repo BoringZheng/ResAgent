@@ -14,6 +14,7 @@ describe("opencode research (subprocess)", () => {
         yield* llm.text("Evidence")
         yield* llm.text("Analysis")
         yield* llm.text("Verification")
+        yield* llm.text("<｜｜DSML｜｜tool_calls>listdir</｜｜DSML｜｜tool_calls>")
         yield* llm.text("# Final report\n\nVerified conclusion.")
         const provider = testProviderConfig(llm.url)
         const config = {

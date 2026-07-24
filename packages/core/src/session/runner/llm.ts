@@ -222,6 +222,7 @@ const layer = Layer.effect(
               { action: "todowrite", resource: "*", effect: "deny" },
               { action: "plan_enter", resource: "*", effect: "deny" },
               { action: "plan_exit", resource: "*", effect: "deny" },
+              { action: "edit", resource: "*", effect: "deny" },
             ])
           : PermissionV2.merge(agent.info?.permissions ?? [], [{ action: "*", resource: "*", effect: "deny" }])
         : agent.info?.permissions
