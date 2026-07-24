@@ -1,66 +1,91 @@
 name: Bug report
-description: Report an issue that should be fixed (avoid pasting giant AI generated summaries or your issue may be closed/ignored)
+description: Report reproducible ResAgent behavior that should be fixed
+title: "fix: "
+labels:
+  - bug
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include provider tokens, private keys, private host details, or sensitive command output.
+        Report vulnerabilities through the private security advisory link instead.
+
   - type: textarea
     id: description
     attributes:
-      label: Description
-      description: Describe the bug you encountered
-      placeholder: What happened?
+      label: Problem
+      description: Describe what happened and why it is incorrect.
+      placeholder: ResAgent did ..., but I expected ...
     validations:
       required: true
-
-  - type: input
-    id: plugins
-    attributes:
-      label: Plugins
-      description: What plugins are you using?
-    validations:
-      required: false
-
-  - type: input
-    id: opencode-version
-    attributes:
-      label: OpenCode version
-      description: What version of OpenCode are you using?
-    validations:
-      required: false
 
   - type: textarea
     id: reproduce
     attributes:
-      label: Steps to reproduce
-      description: How can we reproduce this issue?
+      label: Reproduction
+      description: Provide the smallest repeatable sequence, with secrets and host details removed.
       placeholder: |
-        1.
-        2.
-        3.
+        1. Start ResAgent from ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ResAgent version or commit
+      description: Paste `resagent --version` or the source commit SHA.
+      placeholder: 0.1.0 or 0123456789ab
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation
+      options:
+        - Windows x64 native artifact
+        - Linux x64 native artifact
+        - Windows source checkout
+        - Linux source checkout
+        - Unsupported platform or method
+    validations:
+      required: true
+
+  - type: input
+    id: operating-system
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 24H2 or Ubuntu 24.04 x64
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Paste `resagent doctor` output after removing private details.
+      render: text
     validations:
       required: false
 
   - type: textarea
-    id: screenshot-or-link
+    id: logs
     attributes:
-      label: Screenshot and/or share link
-      description: Run `/share` to get a share link, or attach a screenshot
-      placeholder: Paste link or drag and drop screenshot here
+      label: Additional evidence
+      description: Add minimal logs, report excerpts, or screenshots with sensitive data removed.
     validations:
       required: false
 
-  - type: input
-    id: os
+  - type: checkboxes
+    id: checks
     attributes:
-      label: Operating System
-      description: what OS are you using?
-      placeholder: e.g., macOS 26.0.1, Ubuntu 22.04, Windows 11
-    validations:
-      required: false
-
-  - type: input
-    id: terminal
-    attributes:
-      label: Terminal
-      description: what terminal are you using?
-      placeholder: e.g., iTerm2, Ghostty, Alacritty, Windows Terminal
-    validations:
-      required: false
+      label: Checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed credentials, private host details, and sensitive output.
+          required: true
+        - label: This is not a vulnerability report.
+          required: true

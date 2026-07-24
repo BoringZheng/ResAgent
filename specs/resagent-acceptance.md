@@ -1,4 +1,4 @@
-# ResAgent Implementation and Acceptance Plan
+# ResAgent Implementation And Acceptance Record
 
 Status: Accepted; fork CI verified on native Linux x64 and Windows x64
 
@@ -59,7 +59,11 @@ against the hoisted tree, and the quarantine was removed. The final `bun.lock` S
 
 - [x] Add `resagent doctor`.
 - [x] Add project branding and upstream attribution.
-- [x] Add install, configuration, migration, and security documentation.
+- [x] Add an OSS project README, documentation index, installation, configuration, usage,
+      migration, development, release, and security documentation.
+- [x] Align contribution, vulnerability-reporting, issue, and pull request governance with
+      ResAgent.
+- [x] Remove stale root translations that presented upstream OpenCode as ResAgent.
 - [x] Add release scripts and checksums.
 - [x] Add native Linux/Windows release-runner automation.
 - [x] Run the five-stage provider E2E through the compiled release binary.
@@ -174,6 +178,45 @@ Findings:
    Resolution: require package-local core typecheck for this slice and retain the monorepo failure as baseline evidence until the upstream file or generated artifact is corrected.
 
 Result: Findings are fixed in the implementation and covered by focused tests.
+
+## 6A. Documentation Review 3
+
+Date: 2026-07-24
+
+Findings:
+
+1. **Critical:** Root translated READMEs still advertised upstream OpenCode installation,
+   releases, desktop applications, macOS support, badges, and support channels.
+   Resolution: keep English as the authority, maintain one aligned Simplified Chinese overview,
+   and remove unsupported stale translations.
+2. **High:** `CONTRIBUTING.md`, `SECURITY.md`, issue forms, and the pull request template governed
+   the upstream OpenCode project rather than ResAgent.
+   Resolution: replace them with ResAgent branch, package-test, security disclosure, remote-test,
+   and review rules.
+3. **High:** The root README did not explain maturity, supported platforms, architecture,
+   security boundaries, development, contribution, release status, or known limitations.
+   Resolution: rebuild it as the project homepage and link detailed procedures through a
+   documentation index.
+4. **Medium:** Repeated setup procedures had no declared source of truth, and inherited package
+   READMEs could be mistaken for product documentation.
+   Resolution: define document authority and mark package documentation as inherited
+   implementation material unless explicitly ResAgent-specific.
+5. **Medium:** The specification overstated `doctor` as checking runtime versions and optional SSH
+   connectivity.
+   Resolution: align the specification with its actual inventory, route, OpenSSH, local file, and
+   report-writability checks.
+6. **High:** The fork defaulted to upstream `dev`, so the GitHub homepage, issue forms, security
+   policy, and direct clones did not expose the ResAgent product branch.
+   Resolution: make `resagent` the repository default while keeping `origin/dev` as the upstream
+   comparison baseline.
+7. **Medium:** Inherited compliance automation allowed only two hours to correct an issue or pull
+   request before automatic closure.
+   Resolution: align templates, links, required sections, and issue policy with ResAgent, and
+   extend the correction window to seven days.
+
+Result: The public documentation now has one supported-product narrative, one installation
+branch, one platform matrix, one security disclosure path, and explicit boundaries for inherited
+OpenCode documentation.
 
 ## 7. Phase 1 Completion Audit
 

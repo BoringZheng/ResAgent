@@ -1,0 +1,49 @@
+name: Usage question
+description: Ask about supported ResAgent setup or behavior
+labels:
+  - question
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: Describe the intended research workflow or supported environment.
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include relevant commands and documentation, without credentials or private host details.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ResAgent version or commit
+      placeholder: 0.1.0 or 0123456789ab
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows x64
+        - Linux x64
+        - Unsupported platform
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I read the documentation index and searched existing issues.
+          required: true
+        - label: I removed credentials, private host details, and sensitive output.
+          required: true

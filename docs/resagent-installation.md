@@ -3,12 +3,14 @@
 For a complete first run after installation, continue with the
 [ResAgent quickstart](resagent-quickstart.md).
 
+Return to the [documentation index](README.md) for the complete guide map.
+
 ## Prerequisites
 
 - Bun `1.3.14`
 - Git
 - OpenSSH client (`ssh`) for `doctor` and remote execution
-- A configured model provider supported by OpenCode
+- A model provider available through ResAgent's inherited provider catalog
 
 Native artifacts do not require Bun or Git at runtime. Source installations require all listed
 prerequisites.
@@ -23,7 +25,9 @@ prerequisites.
 
 ## Obtain An Artifact
 
-Tagged releases publish both native archives and a combined `SHA256SUMS`.
+Tagged releases from this repository publish both native archives and a combined `SHA256SUMS`.
+Use the [release page](https://github.com/BoringZheng/ResAgent/releases) when a suitable tagged
+version is available.
 
 Before a tagged release exists, authenticated GitHub CLI users can download a successful branch
 artifact. These verification artifacts are retained for 14 days.
@@ -110,14 +114,15 @@ Windows PowerShell:
 git clone --branch resagent --single-branch https://github.com/BoringZheng/ResAgent.git
 cd ResAgent
 bun install --frozen-lockfile --linker hoisted
-cd packages\opencode
 
+$resagent = (Resolve-Path .\packages\opencode\src\index.ts).Path
+Set-Location C:\path\to\investigation
 $env:RESAGENT_LAUNCH = "1"
-bun run src\index.ts doctor
-bun run src\index.ts research "Summarize the available evidence"
+bun run $resagent doctor
+bun run $resagent research "Summarize the available evidence"
 ```
 
-`bun run src\index.ts --version` prints `local` in a source checkout. Packaged artifacts carry the
+Running the saved source entrypoint with `--version` prints `local`. Packaged artifacts carry the
 release or CI commit version.
 
 Linux:
@@ -126,10 +131,12 @@ Linux:
 git clone --branch resagent --single-branch https://github.com/BoringZheng/ResAgent.git
 cd ResAgent
 bun install --frozen-lockfile
-cd packages/opencode
 
-RESAGENT_LAUNCH=1 bun run src/index.ts doctor
-RESAGENT_LAUNCH=1 bun run src/index.ts research "Summarize the available evidence"
+resagent_source="$(pwd)/packages/opencode/src/index.ts"
+cd /path/to/investigation
+export RESAGENT_LAUNCH=1
+bun run "$resagent_source" doctor
+bun run "$resagent_source" research "Summarize the available evidence"
 ```
 
 Do not run `node bin/resagent` directly from the source checkout. The package launcher expects an
@@ -171,6 +178,8 @@ A `resagent-v<version>` tag publishes the native archives with a combined `SHA25
 pull-request, and manual workflow runs upload verification artifacts without creating a GitHub
 release.
 
+Maintainers should follow the [release process](resagent-releasing.md) before creating a tag.
+
 ## Initial Check
 
 From the directory that will own reports and sessions:
@@ -186,6 +195,7 @@ research is required.
 In source mode, use:
 
 ```powershell
+$resagent = "C:\path\to\ResAgent\packages\opencode\src\index.ts"
 $env:RESAGENT_LAUNCH = "1"
-bun run src\index.ts doctor
+bun run $resagent doctor
 ```

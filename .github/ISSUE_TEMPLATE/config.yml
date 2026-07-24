@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 💬 Discord Community
-    url: https://discord.gg/opencode
-    about: For support, troubleshooting, how-to questions, and real-time discussion.
+  - name: Security vulnerability
+    url: https://github.com/BoringZheng/ResAgent/security/advisories/new
+    about: Report vulnerabilities privately. Do not include secrets in a public issue.
+  - name: Documentation
+    url: https://github.com/BoringZheng/ResAgent/blob/resagent/docs/README.md
+    about: Start with the documentation index for setup, usage, troubleshooting, and development.

@@ -1,3 +1,8 @@
+> [!NOTE]
+> This is an inherited OpenCode component retained for upstream synchronization. It is not a
+> ResAgent installation, release, or support channel. ResAgent users should start with the
+> repository [README](../README.md).
+
 # opencode GitHub Action
 
 A GitHub Action that integrates [opencode](https://opencode.ai) directly into your GitHub workflow.

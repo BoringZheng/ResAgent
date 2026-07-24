@@ -6,6 +6,10 @@ Baseline: OpenCode `dev` at `e59ba24b801b41d7bb0cabe868c496c61e8ad8c6`
 
 Last reviewed: 2026-07-24
 
+Documentation authority: user and maintainer procedures live in `README.md`, `SECURITY.md`,
+`CONTRIBUTING.md`, and `docs/resagent-*.md`. This specification defines intended product and
+architecture behavior; `specs/resagent-acceptance.md` records dated verification evidence.
+
 ## 1. Purpose
 
 ResAgent is a terminal-first research agent built as an OpenCode distribution. It keeps OpenCode's provider catalog, session engine, permission model, SDK boundary, and TUI, then adds:
@@ -57,7 +61,7 @@ The maintainer configures providers and hosts, verifies connectivity, constrains
 - Research workflow with plan, collect, analyze, verify, and report stages.
 - Markdown report export with source and remote-execution provenance.
 - TUI surfaces for provider state, host state, active targets, and failure details.
-- Unit, integration, and Docker-backed E2E coverage.
+- Unit, integration, local-fixture E2E, and compiled-binary native E2E coverage.
 - Windows and Linux support for the terminal application.
 
 ### 4.2 Deferred
@@ -305,20 +309,22 @@ Structured logs include:
 - permission request identifier;
 - no command output unless debug output logging is explicitly enabled.
 
-`resagent doctor` will verify:
+`resagent doctor` verifies:
 
-- Bun and ResAgent versions;
-- OpenSSH client availability;
-- config parse status;
-- provider integration presence without exposing secrets;
-- host alias resolution;
-- optional non-mutating SSH connectivity checks.
+- configured provider and model availability without exposing secrets;
+- selected research profile and all five resolved role routes;
+- OpenSSH client availability and version;
+- host alias resolution plus referenced identity and known-hosts files;
+- report-directory writability.
+
+`doctor` does not connect to remote hosts or send a model inference request.
 
 ## 9. Compatibility and Upstream Sync
 
 - The fork branch is based on OpenCode `dev`.
+- The ResAgent product, default, and release branch is `resagent`.
 - New commits use `type(scope): summary`.
-- Upstream remains the `origin` remote until the fork remote exists; the fork remote will be named `fork`.
+- Upstream uses the `origin` remote and the ResAgent repository uses the `fork` remote.
 - Syncs are merged or rebased in focused maintenance changes with full package tests.
 - Generated SDK files are changed only through repository generation scripts.
 - ResAgent-specific branding must state that the project is based on OpenCode and is not maintained by the OpenCode team.
@@ -333,3 +339,5 @@ Structured logs include:
 6. No secret appears in logs, snapshots, test artifacts, or exported diagnostics.
 7. A fresh user can complete setup and the primary research workflow using the published documentation.
 8. The completion audit in `specs/resagent-acceptance.md` has evidence for every requirement.
+9. The root README, governance files, issue templates, and maintained translations describe
+   ResAgent rather than inherited OpenCode distribution or support channels.

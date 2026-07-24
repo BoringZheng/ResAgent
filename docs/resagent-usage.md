@@ -3,6 +3,9 @@
 Run ResAgent from the directory that owns the investigation. The current directory determines
 which project configuration, sessions, remote inventory, and report paths are used.
 
+Return to the [documentation index](README.md) for installation, configuration, security, and
+maintainer guides.
+
 ## Command Summary
 
 ```text
@@ -15,7 +18,8 @@ resagent research <question>     Run the five-stage research workflow
 ```
 
 The distribution is named ResAgent, but some inherited OpenCode help text or internal paths may
-still use the `opencode` name. Invoke the installed executable as `resagent`.
+still use the `opencode` name. The expected configuration filenames also remain
+`opencode.json[c]`. Invoke the installed executable as `resagent`.
 
 ## Research From The CLI
 
@@ -263,8 +267,9 @@ paths are rejected.
 Source mode is a Bun entrypoint:
 
 ```powershell
+$resagent = "C:\path\to\ResAgent\packages\opencode\src\index.ts"
 $env:RESAGENT_LAUNCH = "1"
-bun run src\index.ts doctor
+bun run $resagent doctor
 ```
 
 Use `resagent.exe` directly for an extracted Windows native artifact.
@@ -280,3 +285,4 @@ Check authentication, account policy, rate limits, endpoint configuration, and p
 - [Configuration](resagent-configuration.md)
 - [Installation](resagent-installation.md)
 - [Security](resagent-security.md)
+- [Documentation index](README.md)

@@ -1,156 +1,53 @@
 # ResAgent Quickstart
 
-This guide takes a new installation from zero configuration to a completed research report.
-ResAgent supports Windows x64 and Linux x64. macOS builds are not supported.
+This guide starts with an installed or source-ready ResAgent and ends with a completed Markdown
+research report. ResAgent supports Windows x64 and Linux x64. macOS is not supported.
 
-## 1. Choose How To Run ResAgent
+For native archive download, checksum verification, source checkout, and build instructions,
+complete the [installation guide](resagent-installation.md) first. Return to the
+[documentation index](README.md) for reference, security, development, and release guides.
 
-Use a native artifact for normal use. Use the source checkout when developing ResAgent or when no
-tagged release is available yet.
+## 1. Choose An Investigation Directory
 
-### Download A Verified CI Artifact
-
-Tagged releases are the preferred distribution channel. Before the first tagged release, or when
-testing the `resagent` branch, authenticated GitHub CLI users can download the newest successful
-workflow artifact. Branch artifacts are retained for 14 days.
-
-Windows PowerShell:
+Create or open the directory that should own the configuration, sessions, and reports:
 
 ```powershell
-gh auth status
-$run = gh run list `
-  --repo BoringZheng/ResAgent `
-  --workflow resagent-release.yml `
-  --branch resagent `
-  --status success `
-  --limit 1 `
-  --json databaseId `
-  --jq '.[0].databaseId'
-
-gh run download $run `
-  --repo BoringZheng/ResAgent `
-  --name resagent-native-windows-X64 `
-  --dir .\resagent-download
-
-Set-Location .\resagent-download
+New-Item -ItemType Directory -Path .\my-investigation -Force | Out-Null
+Set-Location .\my-investigation
 ```
 
 Linux:
 
 ```bash
-gh auth status
-run="$(
-  gh run list \
-    --repo BoringZheng/ResAgent \
-    --workflow resagent-release.yml \
-    --branch resagent \
-    --status success \
-    --limit 1 \
-    --json databaseId \
-    --jq '.[0].databaseId'
-)"
-
-gh run download "$run" \
-  --repo BoringZheng/ResAgent \
-  --name resagent-native-linux-X64 \
-  --dir ./resagent-download
-
-cd ./resagent-download
+mkdir -p ./my-investigation
+cd ./my-investigation
 ```
 
-The download contains the native archive and its `SHA256SUMS`.
+Every command in the rest of this guide runs from this directory.
 
-### Native Windows Artifact
-
-After downloading `resagent-windows-x64.zip`, verify it against the accompanying `SHA256SUMS`,
-then extract `resagent.exe` into a directory on `PATH`.
+Native installations use `resagent`. In source mode, save the absolute entrypoint and replace
+each `resagent ...` command with `bun run $resagent ...` on PowerShell:
 
 ```powershell
-$expected = (
-  Select-String .\SHA256SUMS -Pattern ' resagent-windows-x64\.zip$'
-).Line.Split()[0].ToLowerInvariant()
-$actual = (
-  Get-FileHash .\resagent-windows-x64.zip -Algorithm SHA256
-).Hash.ToLowerInvariant()
-if ($actual -ne $expected) {
-  throw "Checksum mismatch for resagent-windows-x64.zip"
-}
-
-$install = "$HOME\.local\bin"
-New-Item -ItemType Directory -Path $install -Force | Out-Null
-Expand-Archive .\resagent-windows-x64.zip -DestinationPath $install -Force
-$env:PATH = "$install;$env:PATH"
-
-resagent --version
+$resagent = "C:\path\to\ResAgent\packages\opencode\src\index.ts"
+$env:RESAGENT_LAUNCH = "1"
+bun run $resagent --version
 ```
 
-The `PATH` assignment above applies to the current PowerShell session. Add
-`%USERPROFILE%\.local\bin` to the user `PATH` for future terminals.
-
-### Native Linux Artifact
+Linux source mode:
 
 ```bash
-grep ' resagent-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c -
-mkdir -p "$HOME/.local/bin"
-tar -xzf resagent-linux-x64.tar.gz -C "$HOME/.local/bin"
-export PATH="$HOME/.local/bin:$PATH"
-
-resagent --version
+resagent_source="/path/to/ResAgent/packages/opencode/src/index.ts"
+export RESAGENT_LAUNCH=1
+bun run "$resagent_source" --version
 ```
 
-Add `~/.local/bin` to the shell profile for future terminals.
-
-### Source Checkout
-
-ResAgent requires Bun `1.3.14`.
-
-```powershell
-git clone --branch resagent --single-branch https://github.com/BoringZheng/ResAgent.git
-cd ResAgent
-bun install --frozen-lockfile --linker hoisted
-cd packages\opencode
-
-$env:RESAGENT_LAUNCH = "1"
-bun run src\index.ts --version
-```
-
-Source mode prints `local` as its version because it is not a packaged release.
-
-On Linux:
-
-```bash
-git clone --branch resagent --single-branch https://github.com/BoringZheng/ResAgent.git
-cd ResAgent
-bun install --frozen-lockfile
-cd packages/opencode
-
-RESAGENT_LAUNCH=1 bun run src/index.ts --version
-```
-
-Do not run `node bin/resagent` from the source checkout. That package launcher is for an installed
-binary layout, while source mode uses Bun and `src/index.ts`.
-
-The remaining examples use the installed `resagent` command. In source mode, run the same
-subcommand after `bun run src\index.ts`. For example:
-
-```powershell
-$env:RESAGENT_LAUNCH = "1"
-bun run src\index.ts doctor
-bun run src\index.ts research "Question"
-```
+Do not run `node bin/resagent` from a source checkout. The package launcher expects an installed
+binary layout.
 
 ## 2. Connect A Provider
 
-The terminal UI provides the simplest provider setup:
-
-```powershell
-resagent
-```
-
-Enter `/connect`, choose a provider, and complete its API-key or OAuth flow. Close the TUI when the
-provider is connected.
-
-The equivalent CLI commands are:
+Use the CLI:
 
 ```powershell
 resagent auth login
@@ -158,15 +55,18 @@ resagent auth list
 resagent models
 ```
 
+Or start the TUI with `resagent`, enter `/connect`, choose a provider, and complete its API-key or
+OAuth flow.
+
 `resagent models` prints the exact `provider/model` identifiers accepted by research profiles.
-Do not guess model IDs from marketing names.
+Do not guess identifiers from provider marketing names.
 
 ## 3. Create A Research Profile
 
-Create `opencode.jsonc` in the directory where research will run. Project-local configuration is
-recommended because reports and sessions are location-scoped.
+Create `opencode.jsonc` in the investigation directory. The inherited filename and schema URL are
+intentional compatibility details.
 
-Replace the example model IDs with values returned by `resagent models`:
+Replace every example route entry with an exact identifier from `resagent models`:
 
 ```jsonc
 {
@@ -177,7 +77,7 @@ Replace the example model IDs with values returned by `resagent models`:
       "balanced": {
         "planner": ["provider/model-planner"],
         "collector": ["provider/model-fast"],
-        "analyst": ["provider/model-analyst"],
+        "analyst": ["provider/model-analysis"],
         "verifier": ["provider/model-verifier"],
         "writer": ["provider/model-writer"],
       },
@@ -186,20 +86,17 @@ Replace the example model IDs with values returned by `resagent models`:
 }
 ```
 
-Every role must contain at least one available model. Add more models to a role to define an
-ordered fallback route:
+Every role needs at least one available model. Additional entries form an ordered fallback route:
 
 ```jsonc
 "analyst": ["provider-a/model-a", "provider-b/model-b"]
 ```
 
-ResAgent only falls back for retryable failures before assistant output or tool side effects.
-Authentication, policy, invalid-request, and context-loss failures stop instead of routing around
-the error.
+Fallback occurs only for classified retryable failures before assistant output or tool side
+effects. Authentication, policy, invalid-request, and context-loss failures stop instead of
+routing around the error.
 
 ## 4. Run The Preflight Check
-
-Run the check from the same directory that contains `opencode.jsonc`:
 
 ```powershell
 resagent doctor
@@ -219,7 +116,8 @@ OpenSSH
 report directory
 ```
 
-`remote hosts: none configured` is only a warning when remote execution is not needed.
+`remote hosts: none configured` is a warning, not a failure, when remote execution is not needed.
+`doctor` does not send a model request or connect to remote hosts.
 
 ## 5. Run The First Research Job
 
@@ -227,7 +125,7 @@ report directory
 resagent research "Compare the available evidence and identify unresolved contradictions."
 ```
 
-The workflow runs five durable stages:
+ResAgent runs five stages:
 
 1. plan;
 2. collect;
@@ -235,13 +133,13 @@ The workflow runs five durable stages:
 4. verify;
 5. report.
 
-The terminal prints stage and provider progress. The final Markdown report is written under:
+The terminal prints stage and provider progress. The final report is written under:
 
 ```text
 .resagent/reports/<run-id>.md
 ```
 
-Choose an explicit path inside the current directory with:
+Choose a stable project-relative path with:
 
 ```powershell
 resagent research `
@@ -250,28 +148,39 @@ resagent research `
   "Investigate the question and produce a sourced conclusion."
 ```
 
-## 6. Continue A Research Session
+Linux:
 
-Reuse the newest session in the current directory:
+```bash
+resagent research \
+  --profile balanced \
+  --output .resagent/reports/first-report.md \
+  "Investigate the question and produce a sourced conclusion."
+```
+
+The output path must remain inside the investigation directory.
+
+## 6. Continue The Session
+
+Continue the newest session in this directory:
 
 ```powershell
 resagent research --continue "Re-evaluate the conclusion using the new evidence."
 ```
 
-Or continue a specific session:
+Or continue an exact session:
 
 ```powershell
 resagent research --session <session-id> "Answer the follow-up question."
 ```
 
-Sessions cannot be continued from a different project directory.
+Sessions are Location-scoped and cannot be continued from another directory.
 
 ## 7. Add Remote Hosts
 
-Remote execution is optional. ResAgent only accepts named hosts from configuration; a prompt
-cannot introduce an arbitrary hostname.
+Skip this section for local-only research.
 
-If OpenSSH already has working aliases in `~/.ssh/config`, reference those aliases:
+Remote execution accepts configured aliases, not arbitrary prompt-supplied destinations. If
+OpenSSH already has a working alias, add it to `opencode.jsonc`:
 
 ```jsonc
 {
@@ -284,22 +193,11 @@ If OpenSSH already has working aliases in `~/.ssh/config`, reference those alias
       "max_concurrency": 1,
       "tags": ["linux", "research"],
     },
-    "research-b": {
-      "host": "research-b",
-      "host_key": "strict",
-      "connect_timeout": 10,
-      "command_timeout": 120000,
-      "max_concurrency": 1,
-      "tags": ["linux", "verification"],
-    },
   },
 }
 ```
 
-ResAgent always supplies the configured port to OpenSSH and defaults it to `22`. When an SSH alias
-uses another port, set the same `port` explicitly in the ResAgent host entry.
-
-If the SSH alias does not carry identity or user settings, configure them explicitly:
+When the SSH alias does not provide user or identity settings, configure them explicitly:
 
 ```jsonc
 "research-a": {
@@ -312,36 +210,34 @@ If the SSH alias does not carry identity or user settings, configure them explic
 }
 ```
 
-Restart ResAgent after changing configuration, then run:
+Restart ResAgent after editing configuration and run `resagent doctor`. The check validates alias
+configuration and local files without connecting.
 
-```powershell
-resagent doctor
-```
-
-`doctor` validates configuration and referenced files. It does not connect to the remote hosts.
-
-## 8. Use Research And Remote Commands In The TUI
-
-Start the TUI from the project directory:
-
-```powershell
-resagent
-```
-
-Create or open a session, then press `Ctrl+P` to open the command palette:
-
-- `Start research` asks for a profile and research question.
-- `Start research with report path` also asks where to write the report.
-- `Remote hosts` selects one or more configured aliases, then asks for the exact command.
-
-Before `remote_run` connects, ResAgent asks for permission using this resource format:
+Before `remote_run` starts SSH, ResAgent requests permission for every exact resource:
 
 ```text
 <host-alias> <exact-command>
 ```
 
-Approve only the command and hosts you intend to run. Rejecting the permission starts zero SSH
-connections.
+Approve only the hosts and command you intend to run. Rejecting a required resource starts no SSH
+connections. Read the [security guide](resagent-security.md) before enabling remote execution.
+
+## 8. Use The TUI
+
+Start ResAgent from the investigation directory:
+
+```powershell
+resagent
+```
+
+Create or open a session, then press `Ctrl+P`:
+
+- `Start research` asks for a profile and question.
+- `Start research with report path` also asks for a project-relative output path.
+- `Remote hosts` selects configured aliases and asks for the exact command.
+
+Research stages, selected provider routes, active remote targets, independent host results, and
+the completed report path remain visible in the session UI.
 
 ## Next Reading
 
@@ -350,3 +246,4 @@ connections.
 - [Installation and release artifacts](resagent-installation.md)
 - [Security model](resagent-security.md)
 - [Migrating from OpenCode](resagent-migration.md)
+- [Documentation index](README.md)

@@ -3,7 +3,13 @@
 ResAgent reads ordinary OpenCode configuration and adds `research` and `remotes`. Existing
 provider credentials and provider definitions remain local to the control-plane machine.
 
+The `opencode.json[c]` filenames, `OPENCODE_*` environment variables, schema URL, and internal
+package names are retained for compatibility with the inherited configuration loader. They do
+not indicate a separate ResAgent installation.
+
 Configuration is loaded at startup. Restart ResAgent after changing a configuration file.
+
+Return to the [documentation index](README.md) for the complete guide map.
 
 ## Configuration Locations
 
@@ -43,6 +49,9 @@ resagent models
 ```
 
 Always populate routes with exact identifiers returned by `resagent models`.
+
+Provider authentication proves that ResAgent can load the provider integration. It does not
+guarantee account access to every model. Run `resagent doctor` after defining routes.
 
 ## Research Profiles
 
@@ -213,3 +222,6 @@ path must also remain inside that location.
 ```
 
 Remove `remotes` entirely for local-only research.
+
+See the [security guide](resagent-security.md) before enabling remote execution and the
+[usage guide](resagent-usage.md) for permission and result behavior.
