@@ -1,41 +1,143 @@
 # ResAgent Installation
 
+For a complete first run after installation, continue with the
+[ResAgent quickstart](resagent-quickstart.md).
+
 ## Prerequisites
 
 - Bun `1.3.14`
 - Git
-- OpenSSH client (`ssh`) for remote execution
+- OpenSSH client (`ssh`) for `doctor` and remote execution
 - A configured model provider supported by OpenCode
+
+Native artifacts do not require Bun or Git at runtime. Source installations require all listed
+prerequisites.
+
+## Supported Platforms
+
+| Platform    | Native artifact             | Source development |
+| ----------- | --------------------------- | ------------------ |
+| Windows x64 | `resagent-windows-x64.zip`  | Supported          |
+| Linux x64   | `resagent-linux-x64.tar.gz` | Supported          |
+| macOS       | Not produced or supported   | Out of scope       |
+
+## Obtain An Artifact
+
+Tagged releases publish both native archives and a combined `SHA256SUMS`.
+
+Before a tagged release exists, authenticated GitHub CLI users can download a successful branch
+artifact. These verification artifacts are retained for 14 days.
+
+Windows:
+
+```powershell
+$run = gh run list `
+  --repo BoringZheng/ResAgent `
+  --workflow resagent-release.yml `
+  --branch resagent `
+  --status success `
+  --limit 1 `
+  --json databaseId `
+  --jq '.[0].databaseId'
+
+gh run download $run `
+  --repo BoringZheng/ResAgent `
+  --name resagent-native-windows-X64 `
+  --dir .\resagent-download
+```
+
+Linux:
+
+```bash
+run="$(
+  gh run list \
+    --repo BoringZheng/ResAgent \
+    --workflow resagent-release.yml \
+    --branch resagent \
+    --status success \
+    --limit 1 \
+    --json databaseId \
+    --jq '.[0].databaseId'
+)"
+
+gh run download "$run" \
+  --repo BoringZheng/ResAgent \
+  --name resagent-native-linux-X64 \
+  --dir ./resagent-download
+```
+
+## Install A Native Artifact
+
+Always verify the downloaded archive against the accompanying `SHA256SUMS`.
+
+Windows PowerShell:
+
+```powershell
+$expected = (
+  Select-String .\SHA256SUMS -Pattern ' resagent-windows-x64\.zip$'
+).Line.Split()[0].ToLowerInvariant()
+$actual = (
+  Get-FileHash .\resagent-windows-x64.zip -Algorithm SHA256
+).Hash.ToLowerInvariant()
+if ($actual -ne $expected) {
+  throw "Checksum mismatch for resagent-windows-x64.zip"
+}
+
+$install = "$HOME\.local\bin"
+New-Item -ItemType Directory -Path $install -Force | Out-Null
+Expand-Archive .\resagent-windows-x64.zip -DestinationPath $install -Force
+$env:PATH = "$install;$env:PATH"
+resagent --version
+```
+
+Linux:
+
+```bash
+grep ' resagent-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c -
+mkdir -p "$HOME/.local/bin"
+tar -xzf resagent-linux-x64.tar.gz -C "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
+resagent --version
+```
+
+For persistent use, add the installation directory to the user `PATH`.
 
 ## Source Installation
 
-```bash
-git clone <resagent-repository>
-cd ResAgent
-bun install
-cd packages/opencode
-```
-
-Run the standalone wrapper:
-
-```bash
-./bin/resagent doctor
-./bin/resagent research "Summarize the available evidence"
-```
-
-On Windows:
+Windows PowerShell:
 
 ```powershell
-node .\bin\resagent doctor
-node .\bin\resagent research "Summarize the available evidence"
+git clone --branch resagent --single-branch https://github.com/BoringZheng/ResAgent.git
+cd ResAgent
+bun install --frozen-lockfile --linker hoisted
+cd packages\opencode
+
+$env:RESAGENT_LAUNCH = "1"
+bun run src\index.ts doctor
+bun run src\index.ts research "Summarize the available evidence"
 ```
 
-## Native Artifact
+`bun run src\index.ts --version` prints `local` in a source checkout. Packaged artifacts carry the
+release or CI commit version.
 
-Native release artifacts are supported on Linux x64 and Windows x64. macOS release builds are
-intentionally out of scope.
+Linux:
 
-Build the current platform without modifying dependency versions:
+```bash
+git clone --branch resagent --single-branch https://github.com/BoringZheng/ResAgent.git
+cd ResAgent
+bun install --frozen-lockfile
+cd packages/opencode
+
+RESAGENT_LAUNCH=1 bun run src/index.ts doctor
+RESAGENT_LAUNCH=1 bun run src/index.ts research "Summarize the available evidence"
+```
+
+Do not run `node bin/resagent` directly from the source checkout. The package launcher expects an
+installed binary layout. Source mode runs `src/index.ts` with Bun.
+
+## Build A Native Artifact
+
+From `packages/opencode`, build the current platform without modifying dependency versions:
 
 ```bash
 bun run script/build.ts --single --archive --skip-install --skip-embed-web-ui
@@ -80,3 +182,10 @@ resagent doctor
 A release installation is ready when providers, the selected research profile, all five routes,
 OpenSSH, and the report directory are reported as `ok`. Remote hosts may be absent when only local
 research is required.
+
+In source mode, use:
+
+```powershell
+$env:RESAGENT_LAUNCH = "1"
+bun run src\index.ts doctor
+```
