@@ -531,6 +531,65 @@ Fork CI acceptance on 2026-07-24:
 - Both extracted binaries reported `0.0.0-resagent-9ff32c55d0ad`; both packaged-binary E2E jobs
   completed with 1 pass and 0 fail.
 
+## 12A. WSL Fresh-User Acceptance
+
+Run on 2026-07-24 against the local WSL2 `podman-machine-default` distribution:
+
+- Environment: Fedora Linux 44 container image, Linux x86_64, UID 1000, with `tar`, `gzip`,
+  `sha256sum`, `curl`, OpenSSH, and Python 3 available.
+- No SSH connection was attempted. No `tor-*`, `az-*`, or other remote host was contacted.
+- Workflow run `30070650302` artifact `resagent-native-linux-X64` was downloaded outside WSL,
+  then checksum verification, extraction, installation, configuration, diagnostics, provider
+  calls, and report inspection ran inside WSL under `/tmp/resagent-user-c7798222`.
+- The artifact checksum matched its `SHA256SUMS` entry:
+
+```text
+25d292edd3dfce6ced43290b2eb416a2dc8726db11bbbeb2fa3b2ab906454315  resagent-linux-x64.tar.gz
+```
+
+- Installation to the isolated `~/.local/bin` succeeded. The 147,224,704-byte executable
+  reported `0.0.0-resagent-c77982222563`.
+- `resagent doctor` returned nine `ok` checks for providers, the selected profile, all five
+  routes, OpenSSH, and report writability. The only warning was the expected
+  `remote hosts: none configured`.
+- A loopback-only OpenAI-compatible fixture received exactly five non-title requests. The CLI
+  completed plan, collect, analyze, verify, and report, and wrote a 1,126-byte Markdown report
+  containing a conclusion, citations, confidence and limitations, and provider provenance.
+- A unique environment canary was absent from stdout, stderr, fixture logs, and the report.
+- Fresh-user inspection found that `resagent --help` incorrectly rendered command names as
+  `opencode`. Root cause: the native build defined `process.env.RESAGENT_DISTRIBUTION`, while the
+  branding helper read the value indirectly through a function parameter, preventing Bun's
+  compile-time replacement.
+
+Resolution and final rerun:
+
+- Commit `c5e1f6e72711803c6ee4a400ac01e847d291f78e` directly exposes the standalone distribution
+  constant to the compiler, removes inherited product names from top-level command summaries,
+  and makes the release verifier execute and scan `--help` in addition to checking `--version`.
+- Focused branding and release-verifier tests: 6 pass, 0 fail.
+- `packages/opencode` typecheck: pass.
+- Local Windows x64 native build and archive verifier: pass. The extracted command summary uses
+  `resagent` throughout.
+- Fork workflow run `30075196356` passed on exact commit
+  `c5e1f6e72711803c6ee4a400ac01e847d291f78e`: Linux job `89424302428` and Windows job
+  `89424302471` both passed typecheck, native archive build, version and help verification,
+  compiled-binary five-stage E2E, and artifact upload.
+- The fixed Linux artifact checksum matched:
+
+```text
+69c68cb7989bd38b82e5a671ce30a2d124fe40024f4496524dd159024cf10bdb  resagent-linux-x64.tar.gz
+```
+
+- A second clean WSL installation under `/tmp/resagent-user-c5e1f6e72` reported
+  `0.0.0-resagent-c5e1f6e72711`. Without any branding environment variable,
+  `resagent --help` displayed `resagent research` and no `resagent` command summary contained the
+  `opencode` product name.
+- The final WSL rerun again produced nine `ok` doctor checks, one expected no-remotes warning,
+  exactly five provider calls, and a 1,097-byte report with conclusions, citations, confidence,
+  limitations, and provenance. The final canary scan passed.
+- Both isolated WSL user directories and both Windows artifact-download directories were removed
+  after verification.
+
 ## 13. Completion Audit Template
 
 For each checked requirement, record:
