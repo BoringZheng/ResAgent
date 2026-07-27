@@ -98,8 +98,14 @@ For a security issue, follow [SECURITY.md](../SECURITY.md), preserve evidence pr
 affected credentials when needed, publish a fixed tag, and use a GitHub Security Advisory to
 explain impact and remediation.
 
-## Upstream Workflows
+## Repository Actions
 
-The repository retains inherited OpenCode publishing workflows for upstream synchronization.
-They are not ResAgent release channels. A ResAgent release is valid only when produced by
-`resagent-release.yml` from a `resagent-v*` tag and verified as described above.
+`ResAgent native release` is the only supported GitHub Actions acceptance and release workflow
+for this fork. The inherited OpenCode workflow files remain in the source tree to reduce upstream
+synchronization conflicts, but their workflows are disabled in `BoringZheng/ResAgent`. They
+depend on upstream-only runners, credentials, repositories, release channels, and issue or pull
+request maintenance policy.
+
+Do not treat inherited workflow failures, skipped jobs, or historical runs as ResAgent acceptance
+results. A ResAgent release is valid only when `resagent-release.yml` succeeds for both native
+jobs on a `resagent-v*` tag and publishes the assets verified above.

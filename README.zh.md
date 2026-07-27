@@ -16,6 +16,8 @@ ResAgent 基于 [OpenCode](https://github.com/anomalyco/opencode) 构建，保�
 
 ResAgent 当前处于**候选发布版本**阶段。完整研究工作流、Windows/Linux 原生构建、编译后二进制 E2E、多 Provider 路由、报告导出和有边界的 SSH 执行均已实现，并由原生发布工作流验证。
 
+`ResAgent native release` 是本 Fork 唯一受支持的 GitHub Actions 验收与发布工作流。继承自 OpenCode 的自动化依赖仅供上游使用的 Runner、凭据、仓库和维护策略，因此已在本 GitHub 仓库中停用。
+
 当前兼容性契约尚未稳定。需要可重复部署时，请固定 Release Tag 或 Commit。ResAgent 产品分支和默认分支都是 `resagent`；源码安装仍显式指定该分支，避免 Checkout 意外跟随上游分支。
 
 ## 为什么使用 ResAgent

@@ -2,7 +2,7 @@
 
 Status: Accepted; fork CI verified on native Linux x64 and Windows x64
 
-Last reviewed: 2026-07-24
+Last reviewed: 2026-07-27
 
 ## 1. Delivery Sequence
 
@@ -589,6 +589,26 @@ Resolution and final rerun:
   limitations, and provenance. The final canary scan passed.
 - Both isolated WSL user directories and both Windows artifact-download directories were removed
   after verification.
+
+## 12B. GitHub Actions Acceptance Hygiene
+
+Reviewed on 2026-07-27:
+
+- `ResAgent native release` run `30079227906` passed for exact commit
+  `49171024df943ce641989bbb4fdb57b058371638`: native Linux and native Windows succeeded; the
+  publish job was correctly skipped for a branch push.
+- The red checks visible on that commit were not ResAgent acceptance failures. Scheduled
+  `close-issues` run `30240492378` and `close-prs` run `30224410778` executed inherited OpenCode
+  maintenance scripts against `anomalyco/opencode` and failed with `403 Forbidden` because the
+  fork token cannot modify upstream issues or pull requests.
+- Fifteen hourly `beta` runs were queued on an upstream-only Blacksmith runner and required
+  OpenCode application credentials and API secrets unavailable to this fork.
+- All 26 inherited OpenCode workflows were disabled in `BoringZheng/ResAgent`, all queued
+  `beta` runs were cancelled, and `ResAgent native release` remained active as the only supported
+  acceptance and release workflow.
+- Historical failed or cancelled checks remain attached to their original commit by GitHub.
+  Acceptance is determined from the latest `ResAgent native release` run, not inherited workflow
+  history.
 
 ## 13. Completion Audit Template
 

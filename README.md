@@ -24,6 +24,10 @@ ResAgent is a **release candidate**. The complete research workflow, Windows and
 builds, compiled-binary E2E tests, multi-provider routing, report export, and bounded SSH
 execution are implemented and covered by the native release workflow.
 
+`ResAgent native release` is the only supported GitHub Actions acceptance and release workflow
+for this fork. Inherited OpenCode automation is disabled in the GitHub repository because it
+depends on upstream-only runners, credentials, repositories, and maintenance policy.
+
 The compatibility contract is not yet stable. Pin a release tag or commit for repeatable use.
 The product and default branch is `resagent`. Source commands still select it explicitly so a
 checkout cannot silently follow an upstream branch.
