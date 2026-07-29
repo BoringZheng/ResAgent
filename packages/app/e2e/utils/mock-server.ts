@@ -61,7 +61,12 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
         route,
         path === "/api/event"
           ? [{ id: "evt_mock_connected", type: "server.connected", data: {} }, ...(events?.map(currentEvent) ?? [])]
-          : events,
+          : [
+              ...(path === "/global/event"
+                ? [{ payload: { id: "evt_mock_connected", type: "server.connected", properties: {} } }]
+                : []),
+              ...(events ?? []),
+            ],
         config.eventRetry,
       )
     }
@@ -166,7 +171,12 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
         .filter((session) => parentID !== "null" || session.parentID === undefined)
         .filter((session) => {
           const search = url.searchParams.get("search")?.toLowerCase()
-          return !search || String(session.title ?? "").toLowerCase().includes(search)
+          return (
+            !search ||
+            String(session.title ?? "")
+              .toLowerCase()
+              .includes(search)
+          )
         })
       const ordered = url.searchParams.get("order") === "asc" ? sessions.toReversed() : sessions
       const data = ordered.slice(offset, offset + limit)
@@ -180,7 +190,9 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
       const statuses = (config.sessionStatus ?? {}) as Record<string, { type?: string }>
       return json(route, {
         data: Object.fromEntries(
-          Object.entries(statuses).flatMap(([id, status]) => (status.type === "idle" ? [] : [[id, { type: "running" }]])),
+          Object.entries(statuses).flatMap(([id, status]) =>
+            status.type === "idle" ? [] : [[id, { type: "running" }]],
+          ),
         ),
       })
     }
@@ -293,7 +305,8 @@ function currentPermission(value: unknown) {
     resources: permission.patterns ?? [],
     save: permission.always,
     metadata: permission.metadata,
-    source: tool?.messageID && tool.callID ? { type: "tool", messageID: tool.messageID, callID: tool.callID } : undefined,
+    source:
+      tool?.messageID && tool.callID ? { type: "tool", messageID: tool.messageID, callID: tool.callID } : undefined,
   }
 }
 
