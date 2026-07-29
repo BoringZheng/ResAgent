@@ -10,6 +10,7 @@ import { GrepTool } from "./grep"
 import { QuestionTool } from "./question"
 import { ReadTool } from "./read"
 import { RemoteRunTool } from "./remote-run"
+import { ResearchStageTool } from "./research-stage"
 import { SkillTool } from "./skill"
 import { TodoWriteTool } from "./todowrite"
 import { WebFetchTool } from "./webfetch"
@@ -41,6 +42,7 @@ export const node = makeLocationNode({
     QuestionTool.node,
     ReadTool.node,
     RemoteRunTool.node,
+    ResearchStageTool.node,
     SkillTool.node,
     TodoWriteTool.node,
     WebFetchTool.node,

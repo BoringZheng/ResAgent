@@ -98,6 +98,58 @@ Unavailable models are removed from a route. Automatic fallback occurs only befo
 output or tool side effects and only for classified retryable failures. Authentication, policy,
 invalid-request, and context-loss failures do not fall back.
 
+## Research Budget
+
+`research.budget` states the ceilings a single run may not cross. Every field is optional and an
+omitted one takes the default below:
+
+```jsonc
+{
+  "research": {
+    "budget": {
+      "max_cost": 5.0,
+      "max_tokens": 2000000,
+      "max_tool_calls_per_stage": 24,
+      "max_recollect_rounds": 1,
+      "max_rechecks": 8,
+      "max_parallel_collectors": 1,
+    },
+  },
+}
+```
+
+| Field                      | Default   | Meaning                                                            |
+| -------------------------- | --------- | ------------------------------------------------------------------ |
+| `max_cost`                 | `5.0`     | Provider spend, in the catalog's currency, one run may accumulate   |
+| `max_tokens`               | `2000000` | Input, output, reasoning, and cache tokens one run may accumulate   |
+| `max_tool_calls_per_stage` | `24`      | Provider steps one stage round may take; a step may carry several tool calls |
+| `max_recollect_rounds`     | `1`       | Times a run may reopen collection to close reported gaps            |
+| `max_rechecks`             | `8`       | Times verification may retrieve an already-recorded source again    |
+| `max_parallel_collectors`  | `1`       | Collection sessions that may run at once                            |
+
+Later configuration documents win per field, so a project can raise one ceiling without restating
+the rest. `max_recollect_rounds` and `max_rechecks` accept `0`, which turns those loops off.
+
+`max_parallel_collectors` above `1` splits the first collection round. The plan's requirements are
+dealt round-robin into that many buckets, each bucket is collected by its own child session, and the
+children run concurrently. A child collects only its own bucket and answers for only those
+requirements; the evidence it gathers is recorded against the parent run, which stays the only place
+a run's state lives. A child that fails costs its bucket, not the run: the parent still runs the
+collection round itself with whatever the children reported, and every child is named in the
+report's Provenance section with its bucket and its outcome. Later rounds, including reopened
+collection, never split.
+
+Raising this multiplies the permission prompts a run can raise, because each child asks for its own
+`remote_run` grants. Prefer leaving it at `1` for runs that reach remote hosts.
+
+Cost and token ceilings are checked between stage rounds, never inside one. A run that reaches a
+ceiling fails with its evidence and its completed stages intact, so raising the ceiling and running
+`resagent research --resume` costs only the round that never ran. The plan stage has its own small
+step ceiling for reconnaissance and does not read `max_tool_calls_per_stage`.
+
+Every report's Provenance section states what the run spent in total and per stage, and names any
+stage that reached the step ceiling.
+
 ## Remote Hosts
 
 ResAgent remote aliases are an allowlist. The model cannot supply an arbitrary hostname.

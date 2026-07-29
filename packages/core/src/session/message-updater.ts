@@ -395,8 +395,14 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
       "session.next.research.provider.attempted": () => Effect.void,
       "session.next.research.provider.attempt.settled": () => Effect.void,
       "session.next.research.stage.completed": () => Effect.void,
+      "session.next.research.evidence.recorded": () => Effect.void,
+      "session.next.research.plan.recorded": () => Effect.void,
+      "session.next.research.stage.reopened": () => Effect.void,
       "session.next.research.completed": () => Effect.void,
       "session.next.research.failed": () => Effect.void,
+      "session.next.research.resumed": () => Effect.void,
+      "session.next.research.subcollection.started": () => Effect.void,
+      "session.next.research.subcollection.settled": () => Effect.void,
     })
   })
 }

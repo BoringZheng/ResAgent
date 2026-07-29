@@ -3,12 +3,15 @@ export * as ResearchRun from "./research-run"
 import { Event } from "@opencode-ai/schema/event"
 import { SessionEvent } from "@opencode-ai/schema/session-event"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
+import { eq } from "drizzle-orm"
 import { ConfigResearch } from "./config/research"
 import { Database } from "./database/database"
 import { makeGlobalNode } from "./effect/app-node"
 import { KeyedMutex } from "./effect/keyed-mutex"
 import { EventV2 } from "./event"
+import { ResearchEvidence } from "./research-evidence"
 import { SessionMessage } from "./session/message"
+import { SessionTable } from "./session/sql"
 import { SessionSchema } from "./session/schema"
 
 export const ID = Schema.String.check(Schema.isPattern(/^run_[A-Za-z0-9]+$/)).pipe(Schema.brand("ResearchRun.ID"))
@@ -40,13 +43,31 @@ export interface Attempt {
   readonly messageID?: SessionMessage.ID
 }
 
+export interface Reopening {
+  readonly round: number
+  readonly reason: string
+  /** Index into `attempts` where this round's attempts begin; earlier rounds stay in the list. */
+  readonly fromAttempt: number
+}
+
 export interface StageInfo {
   readonly stage: Stage
   readonly role: Role
   readonly route: ReadonlyArray<string>
   readonly attempts: ReadonlyArray<Attempt>
   readonly status: "active" | "completed"
+  /** One entry per reopening, in order. The current round is `reopenings.length + 1`. */
+  readonly reopenings: ReadonlyArray<Reopening>
   readonly messageID?: SessionMessage.ID
+}
+
+export interface Subcollection {
+  /** The child session doing the gathering. Its `parentID` is the run's session. */
+  readonly sessionID: SessionSchema.ID
+  readonly round: number
+  readonly requirementIDs: ReadonlyArray<string>
+  readonly status: "active" | "settled"
+  readonly outcome?: "succeeded" | "failed"
 }
 
 export interface Info {
@@ -55,10 +76,39 @@ export interface Info {
   readonly profile: ConfigResearch.ProfileName
   readonly question: string
   readonly status: "active" | "completed" | "failed"
+  /** When the run began. Bounds which of a shared session's turns the run has to answer for. */
+  readonly startedAt: DateTime.Utc
   readonly stages: ReadonlyArray<StageInfo>
+  /** Harvested from tool calls, so it survives compaction and outlives the message history. */
+  readonly evidence: ReadonlyArray<ResearchEvidence.Evidence>
+  /** Child sessions collection was split across. Empty unless `max_parallel_collectors` exceeds 1. */
+  readonly subcollections: ReadonlyArray<Subcollection>
   readonly stage?: StageInfo
+  readonly plan?: Readonly<Record<string, unknown>>
   readonly reportPath?: string
   readonly error?: string
+}
+
+/**
+ * The stage a child session may borrow, which is the collect stage and only while the run names
+ * that child in an open subcollection. This is the whole of a child's authority: a session that
+ * points its `parentID` at a research run gets nothing from doing so.
+ */
+export function subcollectionStage(run: Info, childSessionID: SessionSchema.ID) {
+  if (run.status !== "active") return undefined
+  const open = run.subcollections.find((item) => item.sessionID === childSessionID && item.status === "active")
+  if (!open) return undefined
+  const stage = run.stages.find((item) => item.stage === "collect")
+  if (!stage || stage.status !== "active") return undefined
+  // The child records no attempts of its own, so it is handed the stage without the parent's.
+  return { ...stage, attempts: [] satisfies ReadonlyArray<Attempt> }
+}
+
+/** A child session's borrowed authority: whose run, which stage, and for which requirements. */
+export interface Borrowed {
+  readonly run: Info
+  readonly stage: StageInfo
+  readonly requirementIDs: ReadonlyArray<string>
 }
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("ResearchRun.NotFoundError", {
@@ -110,10 +160,32 @@ export class IndeterminateAttemptError extends Schema.TaggedErrorClass<Indetermi
   }
 }
 
+export class ResumeUnavailableError extends Schema.TaggedErrorClass<ResumeUnavailableError>()(
+  "ResearchRun.ResumeUnavailableError",
+  {
+    sessionID: SessionSchema.ID,
+    runID: ID.pipe(Schema.optional),
+    status: Schema.String.pipe(Schema.optional),
+  },
+) {
+  override get message() {
+    return this.runID === undefined
+      ? `Session ${this.sessionID} has no research run to resume`
+      : `Research run ${this.runID} is ${this.status} and only a failed run can be resumed`
+  }
+}
+
 export type MutationError = NotFoundError | RunMismatchError | InvalidTransitionError | IndeterminateAttemptError
 
 export interface Interface {
   readonly current: (sessionID: SessionSchema.ID) => Effect.Effect<Info | undefined, InvalidHistoryError>
+  /**
+   * What a session may do on another session's behalf. A subcollector has no run of its own: it
+   * borrows the collect stage of the run on its parent, and only for the bucket that run opened for
+   * it. Nothing here is derived from the child's own stream, so a session cannot grant itself
+   * anything by pointing its `parentID` at a research run.
+   */
+  readonly borrowed: (sessionID: SessionSchema.ID) => Effect.Effect<Borrowed | undefined, InvalidHistoryError>
   readonly start: (input: {
     readonly sessionID: SessionSchema.ID
     readonly profile: ConfigResearch.ProfileName
@@ -153,6 +225,47 @@ export interface Interface {
     readonly stage: Stage
     readonly messageID: SessionMessage.ID
   }) => Effect.Effect<void, MutationError | InvalidHistoryError>
+  /** Reactivates a completed stage for another round. The reason travels into the report. */
+  readonly reopenStage: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly runID: ID
+    readonly stage: Stage
+    readonly reason: string
+  }) => Effect.Effect<number, MutationError | InvalidHistoryError>
+  /** Records what a settled turn actually retrieved. Candidates already stored are skipped. */
+  readonly recordEvidence: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly runID: ID
+    readonly stage: Stage
+    readonly collectedSessionID: SessionSchema.ID
+    readonly messageID: SessionMessage.ID
+    readonly candidates: ReadonlyArray<ResearchEvidence.Candidate>
+    /** Set when the candidates re-retrieve an already-recorded source. */
+    readonly supersedes?: string
+  }) => Effect.Effect<ReadonlyArray<ResearchEvidence.Evidence>, MutationError | InvalidHistoryError>
+  readonly recordPlan: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly runID: ID
+    readonly messageID: SessionMessage.ID
+    readonly plan: Readonly<Record<string, unknown>>
+  }) => Effect.Effect<void, MutationError | InvalidHistoryError>
+  /**
+   * Opens a child session's borrowed authority to collect for this run. Only while one of these is
+   * open does `subcollectionStage` hand that child the collect stage.
+   */
+  readonly startSubcollection: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly runID: ID
+    readonly childSessionID: SessionSchema.ID
+    readonly round: number
+    readonly requirementIDs: ReadonlyArray<string>
+  }) => Effect.Effect<void, MutationError | InvalidHistoryError>
+  readonly settleSubcollection: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly runID: ID
+    readonly childSessionID: SessionSchema.ID
+    readonly outcome: "succeeded" | "failed"
+  }) => Effect.Effect<void, MutationError | InvalidHistoryError>
   readonly complete: (input: {
     readonly sessionID: SessionSchema.ID
     readonly runID: ID
@@ -163,6 +276,14 @@ export interface Interface {
     readonly runID: ID
     readonly message: string
   }) => Effect.Effect<void, MutationError | InvalidHistoryError>
+  /**
+   * Reactivates a failed run at the first stage that never completed. Everything the run already
+   * established stands, so resuming costs only the work that was actually lost.
+   */
+  readonly resume: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly runID?: ID
+  }) => Effect.Effect<Info, MutationError | InvalidHistoryError | ResumeUnavailableError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ResearchRun") {}
@@ -187,7 +308,10 @@ export function fold(events: ReadonlyArray<SessionEvent.Research.DurableEvent>):
         profile: ConfigResearch.ProfileName.make(event.data.profile),
         question: event.data.question,
         status: "active",
+        startedAt: event.data.timestamp,
         stages: [],
+        evidence: [],
+        subcollections: [],
       }
       continue
     }
@@ -212,6 +336,7 @@ export function fold(events: ReadonlyArray<SessionEvent.Research.DurableEvent>):
         route: event.data.route,
         attempts: [],
         status: "active",
+        reopenings: [],
       }
       state = { ...state, stage, stages: [...state.stages, stage] }
       continue
@@ -278,11 +403,91 @@ export function fold(events: ReadonlyArray<SessionEvent.Research.DurableEvent>):
       if (stage.attempts.some((attempt) => attempt.status === "active"))
         invalid(state.sessionID, "Cannot complete a stage with an unsettled provider attempt")
       if (
-        !stage.attempts.some((attempt) => attempt.status === "succeeded" && attempt.messageID === event.data.messageID)
+        !currentRoundAttempts(stage).some(
+          (attempt) => attempt.status === "succeeded" && attempt.messageID === event.data.messageID,
+        )
       )
         invalid(state.sessionID, "Stage completion does not match a successful provider attempt")
       const completed = { ...stage, status: "completed" as const, messageID: event.data.messageID }
       state = replaceStage(state, completed)
+      continue
+    }
+    if (event.type === SessionEvent.Research.EvidenceRecorded.type) {
+      requireActive(state, event.type)
+      if (!state.stages.some((stage) => stage.stage === event.data.stage))
+        invalid(state.sessionID, `Research evidence references stage ${event.data.stage}, which never started`)
+      if (state.evidence.some((item) => item.id === event.data.evidenceID))
+        invalid(state.sessionID, `Research evidence ${event.data.evidenceID} was recorded more than once`)
+      if (event.data.supersedes !== undefined && !state.evidence.some((item) => item.id === event.data.supersedes))
+        invalid(state.sessionID, `Research evidence ${event.data.evidenceID} supersedes unknown evidence`)
+      state = { ...state, evidence: [...state.evidence, ResearchEvidence.fromEvent(event.data)] }
+      continue
+    }
+    if (event.type === SessionEvent.Research.PlanRecorded.type) {
+      requireActive(state, event.type)
+      if (!state.stages.some((stage) => stage.stage === "plan"))
+        invalid(state.sessionID, "Research plan was recorded before the plan stage started")
+      // Last write wins so an approved or edited plan can supersede the generated one.
+      state = { ...state, plan: event.data.plan }
+      continue
+    }
+    if (event.type === SessionEvent.Research.StageReopened.type) {
+      requireActive(state, event.type)
+      if (state.stage?.status === "active")
+        invalid(state.sessionID, `Cannot reopen ${event.data.stage} while stage ${state.stage.stage} is active`)
+      const existing = state.stages.find((item) => item.stage === event.data.stage)
+      if (!existing || existing.status !== "completed")
+        invalid(state.sessionID, `Research stage ${event.data.stage} is not completed and cannot be reopened`)
+      if (event.data.round !== existing.reopenings.length + 2)
+        invalid(
+          state.sessionID,
+          `Research stage ${event.data.stage} reopened as round ${event.data.round}, expected ${existing.reopenings.length + 2}`,
+        )
+      const reopened: StageInfo = {
+        ...existing,
+        status: "active",
+        messageID: undefined,
+        reopenings: [
+          ...existing.reopenings,
+          { round: event.data.round, reason: event.data.reason, fromAttempt: existing.attempts.length },
+        ],
+      }
+      state = replaceStage(state, reopened)
+      continue
+    }
+    if (event.type === SessionEvent.Research.SubcollectionStarted.type) {
+      requireActive(state, event.type)
+      const stage = state.stages.find((item) => item.stage === "collect")
+      if (!stage || stage.status !== "active")
+        invalid(state.sessionID, "A subcollection can only start while the collect stage is active")
+      if (state.subcollections.some((item) => item.sessionID === event.data.childSessionID))
+        invalid(state.sessionID, `Subcollection session ${event.data.childSessionID} was started more than once`)
+      state = {
+        ...state,
+        subcollections: [
+          ...state.subcollections,
+          {
+            sessionID: SessionSchema.ID.make(event.data.childSessionID),
+            round: event.data.round,
+            requirementIDs: event.data.requirementIDs,
+            status: "active",
+          },
+        ],
+      }
+      continue
+    }
+    if (event.type === SessionEvent.Research.SubcollectionSettled.type) {
+      requireActive(state, event.type)
+      const open = state.subcollections.find(
+        (item) => item.sessionID === event.data.childSessionID && item.status === "active",
+      )
+      if (!open) invalid(state.sessionID, `Subcollection session ${event.data.childSessionID} is not open`)
+      state = {
+        ...state,
+        subcollections: state.subcollections.map((item) =>
+          item === open ? { ...item, status: "settled" as const, outcome: event.data.outcome } : item,
+        ),
+      }
       continue
     }
     if (event.type === SessionEvent.Research.Completed.type) {
@@ -295,6 +500,14 @@ export function fold(events: ReadonlyArray<SessionEvent.Research.DurableEvent>):
     if (event.type === SessionEvent.Research.Failed.type) {
       requireActive(state, event.type)
       state = { ...state, status: "failed", error: event.data.message }
+      continue
+    }
+    if (event.type === SessionEvent.Research.Resumed.type) {
+      // Only a failed run resumes. Nothing else is touched: the completed stages keep the messages
+      // they closed on, the plan stands, and the evidence index carries over intact.
+      if (state.status !== "failed")
+        invalid(state.sessionID, `Research run ${state.id} is ${state.status} and cannot be resumed`)
+      state = { ...state, status: "active", error: undefined }
     }
   }
   return state
@@ -336,6 +549,26 @@ const layer = Layer.effect(
     const current = Effect.fn("ResearchRun.current")((sessionID: SessionSchema.ID) =>
       snapshot(sessionID).pipe(Effect.map((state) => state.run)),
     )
+
+    /**
+     * The parent link comes from the session row and the grant from the parent's own event stream,
+     * so a child cannot widen what it was given by anything it does in its own session.
+     */
+    const borrowed = Effect.fn("ResearchRun.borrowed")(function* (sessionID: SessionSchema.ID) {
+      const rows = yield* db
+        .select({ parentID: SessionTable.parent_id })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, sessionID))
+        .pipe(Effect.orDie)
+      const parentID = rows.at(0)?.parentID
+      if (!parentID) return undefined
+      const run = yield* current(parentID)
+      if (!run) return undefined
+      const stage = subcollectionStage(run, sessionID)
+      if (!stage) return undefined
+      const open = run.subcollections.find((item) => item.sessionID === sessionID && item.status === "active")!
+      return { run, stage, requirementIDs: open.requirementIDs } satisfies Borrowed
+    })
 
     const publish = <D extends EventV2.Definition>(
       definition: D,
@@ -386,6 +619,7 @@ const layer = Layer.effect(
 
     return Service.of({
       current,
+      borrowed,
       start: Effect.fn("ResearchRun.start")((input) =>
         locks.withLock(input.sessionID)(
           Effect.gen(function* () {
@@ -513,11 +747,144 @@ const layer = Layer.effect(
             if (stage.attempts.some((attempt) => attempt.status === "active"))
               return yield* transition(input.sessionID, "Cannot complete a stage with an unsettled provider attempt")
             if (
-              !stage.attempts.some((attempt) => attempt.status === "succeeded" && attempt.messageID === input.messageID)
+              !currentRoundAttempts(stage).some(
+                (attempt) => attempt.status === "succeeded" && attempt.messageID === input.messageID,
+              )
             )
               return yield* transition(input.sessionID, "Stage completion must identify a successful provider attempt")
             yield* publish(
               SessionEvent.Research.StageCompleted,
+              {
+                ...input,
+                timestamp: yield* DateTime.now,
+              },
+              input.sessionID,
+              sequence,
+            )
+          }),
+        ),
+      ),
+      reopenStage: Effect.fn("ResearchRun.reopenStage")((input) =>
+        locks.withLock(input.sessionID)(
+          Effect.gen(function* () {
+            const { run, sequence } = yield* requireRun(input.sessionID, input.runID)
+            if (run.stage?.status === "active")
+              return yield* transition(
+                input.sessionID,
+                `Cannot reopen ${input.stage} while stage ${run.stage.stage} is active`,
+              )
+            const existing = run.stages.find((item) => item.stage === input.stage)
+            if (!existing || existing.status !== "completed")
+              return yield* transition(input.sessionID, `Research stage ${input.stage} is not completed`)
+            const round = existing.reopenings.length + 2
+            yield* publish(
+              SessionEvent.Research.StageReopened,
+              {
+                ...input,
+                round,
+                timestamp: yield* DateTime.now,
+              },
+              input.sessionID,
+              sequence,
+            )
+            return round
+          }),
+        ),
+      ),
+      recordEvidence: Effect.fn("ResearchRun.recordEvidence")((input) =>
+        locks.withLock(input.sessionID)(
+          Effect.gen(function* () {
+            const { run, sequence } = yield* requireRun(input.sessionID, input.runID)
+            if (!run.stages.some((stage) => stage.stage === input.stage))
+              return yield* transition(input.sessionID, `Research stage ${input.stage} has not started`)
+            if (input.supersedes !== undefined && !run.evidence.some((item) => item.id === input.supersedes))
+              return yield* transition(input.sessionID, `Unknown superseded evidence ${input.supersedes}`)
+            const seen = new Set(run.evidence.map((item) => ResearchEvidence.key(item)))
+            const timestamp = yield* DateTime.now
+            const recorded: ResearchEvidence.Evidence[] = []
+            // Each publish advances the aggregate by one, so the next write expects the seq it returned.
+            let expected = sequence
+            for (const candidate of input.candidates) {
+              if (seen.has(ResearchEvidence.key(candidate))) continue
+              seen.add(ResearchEvidence.key(candidate))
+              const data = {
+                timestamp,
+                sessionID: input.sessionID,
+                runID: input.runID,
+                stage: input.stage,
+                evidenceID: ResearchEvidence.createID(),
+                collectedSessionID: input.collectedSessionID,
+                messageID: input.messageID,
+                toolCallID: candidate.toolCallID,
+                tool: candidate.tool,
+                source: candidate.source,
+                excerpt: candidate.excerpt,
+                digest: candidate.digest,
+                truncated: candidate.truncated,
+                ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
+              }
+              const published = yield* publish(
+                SessionEvent.Research.EvidenceRecorded,
+                data,
+                input.sessionID,
+                expected,
+              )
+              expected = published.durable?.seq ?? expected
+              recorded.push(ResearchEvidence.fromEvent(data))
+            }
+            return recorded as ReadonlyArray<ResearchEvidence.Evidence>
+          }),
+        ),
+      ),
+      recordPlan: Effect.fn("ResearchRun.recordPlan")((input) =>
+        locks.withLock(input.sessionID)(
+          Effect.gen(function* () {
+            const { run, sequence } = yield* requireRun(input.sessionID, input.runID)
+            if (!run.stages.some((stage) => stage.stage === "plan"))
+              return yield* transition(input.sessionID, "Research plan requires the plan stage to have started")
+            yield* publish(
+              SessionEvent.Research.PlanRecorded,
+              {
+                ...input,
+                timestamp: yield* DateTime.now,
+              },
+              input.sessionID,
+              sequence,
+            )
+          }),
+        ),
+      ),
+      startSubcollection: Effect.fn("ResearchRun.startSubcollection")((input) =>
+        locks.withLock(input.sessionID)(
+          Effect.gen(function* () {
+            const { run, sequence } = yield* requireRun(input.sessionID, input.runID)
+            const stage = run.stages.find((item) => item.stage === "collect")
+            if (!stage || stage.status !== "active")
+              return yield* transition(input.sessionID, "A subcollection requires the collect stage to be active")
+            if (run.subcollections.some((item) => item.sessionID === input.childSessionID))
+              return yield* transition(input.sessionID, `Subcollection session ${input.childSessionID} already exists`)
+            yield* publish(
+              SessionEvent.Research.SubcollectionStarted,
+              {
+                ...input,
+                timestamp: yield* DateTime.now,
+              },
+              input.sessionID,
+              sequence,
+            )
+          }),
+        ),
+      ),
+      settleSubcollection: Effect.fn("ResearchRun.settleSubcollection")((input) =>
+        locks.withLock(input.sessionID)(
+          Effect.gen(function* () {
+            const { run, sequence } = yield* requireRun(input.sessionID, input.runID)
+            if (
+              !run.subcollections.some((item) => item.sessionID === input.childSessionID && item.status === "active")
+            )
+              return yield* transition(input.sessionID, `Subcollection session ${input.childSessionID} is not open`)
+            yield* publish(
+              SessionEvent.Research.SubcollectionSettled,
               {
                 ...input,
                 timestamp: yield* DateTime.now,
@@ -562,6 +929,40 @@ const layer = Layer.effect(
           }),
         ),
       ),
+      resume: Effect.fn("ResearchRun.resume")((input) =>
+        locks.withLock(input.sessionID)(
+          Effect.gen(function* () {
+            const state = yield* snapshot(input.sessionID)
+            const run = state.run
+            if (!run) return yield* new ResumeUnavailableError({ sessionID: input.sessionID })
+            if (input.runID !== undefined && run.id !== input.runID)
+              return yield* new RunMismatchError({ sessionID: input.sessionID, expected: run.id, actual: input.runID })
+            if (run.status !== "failed")
+              return yield* new ResumeUnavailableError({
+                sessionID: input.sessionID,
+                runID: run.id,
+                status: run.status,
+              })
+            // A run whose report stage completed failed while exporting, so resuming re-runs the
+            // export rather than any stage.
+            const fromStage =
+              stages.find((item) => !run.stages.some((entry) => entry.stage === item.stage && entry.status === "completed"))
+                ?.stage ?? "report"
+            yield* publish(
+              SessionEvent.Research.Resumed,
+              {
+                sessionID: input.sessionID,
+                runID: run.id,
+                fromStage,
+                timestamp: yield* DateTime.now,
+              },
+              input.sessionID,
+              state.sequence,
+            )
+            return (yield* current(input.sessionID))!
+          }),
+        ),
+      ),
     })
   }),
 )
@@ -572,8 +973,18 @@ export const node = makeGlobalNode({
   deps: [EventV2.node, Database.node],
 })
 
+/**
+ * Replaces by stage identity rather than by position: a reopened stage is rarely the last one
+ * started. Before any reopening the active stage is always the last, so this is unchanged for an
+ * event stream that predates `StageReopened`.
+ */
 function replaceStage(state: Info, stage: StageInfo): Info {
-  return { ...state, stage, stages: [...state.stages.slice(0, -1), stage] }
+  return { ...state, stage, stages: state.stages.map((item) => (item.stage === stage.stage ? stage : item)) }
+}
+
+/** The attempts belonging to a stage's current round; every attempt until the stage is reopened. */
+export function currentRoundAttempts(stage: StageInfo): ReadonlyArray<Attempt> {
+  return stage.attempts.slice(stage.reopenings.at(-1)?.fromAttempt ?? 0)
 }
 
 function requireActive(state: Info, event: string) {

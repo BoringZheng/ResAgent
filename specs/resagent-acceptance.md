@@ -610,6 +610,258 @@ Reviewed on 2026-07-27:
   Acceptance is determined from the latest `ResAgent native release` run, not inherited workflow
   history.
 
+## 12C. Research Evidence Refactor, Phase A
+
+Verified on 2026-07-27:
+
+Requirement: Evidence is a first-class, durable, machine-checkable artifact of a research run.
+Implementation: `packages/core/src/research-evidence.ts` harvests settled tool calls into
+identified evidence, `packages/core/src/research-schema.ts` defines one output schema per stage,
+`packages/core/src/tool/research-stage.ts` registers one submission tool per stage plus
+`research_evidence`, and `packages/core/src/session/runner/llm.ts` selects the active stage's tool
+by permission. `SessionEvent.Research` gained `evidence.recorded` and `plan.recorded`; both are
+additive.
+Automated evidence: 33 pass, 0 fail across `test/research-run.test.ts`,
+`test/research-workflow.test.ts`, `test/research-route.test.ts`, `test/research-evidence.test.ts`,
+and `test/tool-research-stage.test.ts`. The full `packages/core` suite is 1136 pass, 7 skip, 6 fail,
+where every failure is the environmental one recorded below. `packages/opencode` end-to-end coverage
+was updated to the tool contract and passes: `test/cli/research-process.test.ts` drives all five
+stages through their submission tools, and `test/server/httpapi-sdk.test.ts` is 25 pass, 0 fail
+including the five-stage SDK workflow, the conflicting-evidence report, and both provider-route
+tests. `bun typecheck` passes in `packages/core` and `packages/opencode`.
+Manual evidence: `research-run.test.ts` carries a fold guard that publishes a run containing no new
+event type and asserts the entire projection with `toEqual`, so any change to an existing branch's
+semantics fails the suite. Prompt construction no longer reads the message history: the plan and the
+evidence index are rebuilt from durable events, and the 12k truncated prior-results blob is gone.
+A settled submission ends the provider turn, so each stage costs exactly one provider request when
+the model complies; `httpapi-sdk.test.ts` still asserts five primary calls for a clean run and seven
+for the fallback run. The six research tools register globally and are gated by permission alone, so
+`test/location-layer.test.ts` now lists them in the default registry contents.
+Residual risk: the loop-back edge, `research_recheck`, resume, and budget enforcement are Phases B
+and C and are not yet implemented; a stage that exhausts its correction round still fails the run.
+
+Windows environment baseline for this run:
+
+- `packages/core/test/remote-e2e.test.ts`: 0 pass, 6 fail, on the working tree **and** on a clean
+  stashed tree. Every failure is the same fixture-setup error: Windows OpenSSH refuses the generated
+  host key because `CodexSandboxUsers` holds an ACL on it, so `sshd` exits with
+  `no hostkeys available`. No test body runs. This is an ACL condition of the current machine, not a
+  regression; section 10 records 6 pass, 0 fail for the same file on a machine without that ACL.
+- The full `packages/opencode` suite is 3201 pass, 58 skip, 1 todo, 21 fail. Exactly one failure was
+  caused by this change — `test/event-manifest.test.ts` counted 95 latest wire types where the two
+  additive research events make 97 — and it is fixed, with both new type names now asserted by name.
+  The other 20 were reproduced on a clean stashed tree by rerunning their twelve files directly:
+  `test/cli/acp/config-options.test.ts`, `test/cli/help/help-snapshots.test.ts`,
+  `test/cli/tui/editor-context-zed.test.ts`, `test/project/instance-bootstrap.test.ts`,
+  `test/server/httpapi-file.test.ts`, `test/session/llm.test.ts`,
+  `test/session/snapshot-tool-race.test.ts`, `test/snapshot/snapshot.test.ts`,
+  `test/tool/external-directory.test.ts`, `test/tool/truncation.test.ts`,
+  `test/util/filesystem.test.ts`, and `test/util/glob.test.ts`. They fall into three groups: symlink
+  and Windows path-normalization tests that need privileges this machine does not grant, bootstrap
+  and subprocess tests that time out under load, and two unrelated drifts — an OpenAI
+  `reasoning.mode` payload expectation and a help-text snapshot still saying
+  `attach to a running opencode server`. Membership of the timeout group varies between runs, which
+  is itself evidence that those failures are load-dependent rather than deterministic.
+
+## 12D. Research Evidence Refactor, Phase B
+
+Verified on 2026-07-27:
+
+Requirement: Verification can actually verify, and a reported gap can be acted on rather than only
+reported.
+Implementation: `packages/core/src/tool/research-stage.ts` registers `research_recheck`, allowed by
+`packages/core/src/session/runner/llm.ts` to the `verify` stage alone. It takes an evidence
+identifier — never a URL, path, or host alias — and `ResearchEvidence.retrieval` is the only mapping
+from a stored source back to a tool call, so a prompt cannot name a source the run does not already
+hold. The re-run goes through `ToolRegistry.materialize().settle()` by tool name, so a remote
+recheck still asks the same `<alias> <command>` permission the collector was granted and the
+"a prompt cannot introduce a new hostname" invariant is untouched. This is the second caller of
+`materialize()` in `src`; unlike the runner it invokes by name and advertises nothing to a model.
+Rechecks are capped per run by `MAX_RECHECKS` (8). `SessionEvent.Research` gained
+`stage.reopened`, additive; `packages/core/src/research-run.ts` folds it by returning a completed
+stage to `active` and appending a `Reopening` whose `fromAttempt` bounds the current round, and
+`packages/core/src/research-workflow.ts` reopens `[collect, the stage that raised the gaps]` once
+per run (`MAX_RECOLLECT_ROUNDS`).
+Automated evidence: 47 pass, 0 fail across `test/research-run.test.ts`,
+`test/research-workflow.test.ts`, `test/research-route.test.ts`, `test/research-evidence.test.ts`,
+`test/tool-research-stage.test.ts`, `test/remote.test.ts`, and `test/tool-remote-run.test.ts` — the
+last two confirm the remote side did not regress. `test/tool-research-stage.test.ts` registers a
+stand-in `webfetch` and asserts that a recheck re-runs it, records a superseding row, and reports
+the digest change, and that a recheck outside `verify` is refused. `test/research-run.test.ts`
+asserts a reopened stage keeps its position and its flat attempt history, that the previous round's
+message can no longer complete it, and that reopening a stage that never completed fails. The full
+`packages/core` suite is 1141 pass, 7 skip, 6 fail, where all six failures are the `remote-e2e`
+host-key ACL condition recorded under Phase A and none is new; `test/location-layer.test.ts` now
+lists seven research tools in the default registry contents.
+`packages/opencode`: `test/event-manifest.test.ts` counts 98 latest wire types and asserts
+`session.next.research.stage.reopened` by name; `test/cli/research-process.test.ts` passes
+unchanged; `test/server/httpapi-sdk.test.ts` is 26 pass, 0 fail, the new case driving a run whose
+analysis reports a gap and asserting that the report names the reopening round and its reason and
+that the rerun left nothing unmet. `bun typecheck` passes in `packages/core` and
+`packages/opencode`.
+Manual evidence: the fold guard in `test/research-run.test.ts` still asserts the whole projection of
+a stream containing no new event type with `toEqual`, so the append-only constraint remains
+executable. `StageStarted`'s once-per-stage rule is untouched — a reopening is its own event type,
+never a second start — and `StageCompleted` now scopes its success check to the current round via
+`ResearchRun.currentRoundAttempts`, which is the identity function on any stream that predates
+`StageReopened`. A reopened round that fails to submit is salvaged onto whatever turn it did
+produce, so the earlier round's result stands and the gap stays reported rather than costing the
+run its analysis.
+Residual risk: a `verify` gap does not rerun `analyze`, so analysis findings can be stale relative
+to evidence the second collection round added; this is a deliberate cost tradeoff, and verify rules
+against the full evidence index regardless. `MAX_RECOLLECT_ROUNDS` and `MAX_RECHECKS` are module
+constants until Phase C makes them configurable. Resume and budget enforcement remain Phase C;
+parallel collection remains Phase D. Manual acceptance items 1 and 2 of the refactor plan are still
+unexercised against a live provider.
+
+## 12E. Research Evidence Refactor, Phase C
+
+Verified on 2026-07-27:
+
+Requirement: A failed run can be continued rather than restarted, a run's ceilings are stated by
+configuration rather than hardcoded, and what a run spent is visible in its report.
+Implementation: `packages/core/src/config/research.ts` gained a `budget` section — `max_cost`,
+`max_tokens`, `max_tool_calls_per_stage`, `max_recollect_rounds`, `max_rechecks`,
+`max_parallel_collectors` — each optional and bounds-checked by its schema.
+`packages/core/src/research-budget.ts` resolves them into a `Limits` record, merging per field with
+later documents winning, and is registered in `packages/core/src/location-services.ts` as a
+location-scoped service; its layer reads `Config.Service` through `Effect.serviceOption`, so
+`nodeWithoutConfig` yields the defaults without standing up a Location, following the
+`ToolOutputStore` precedent. The hardcoded `Math.min(agent.info?.steps ?? 6, 6)` in
+`packages/core/src/session/runner/llm.ts` now reads `ResearchBudget.steps(limits, stage)`, and the
+plan stage's reconnaissance ceiling moved there as `reconSteps` so one definition serves both the
+runner and the report. `MAX_RECHECKS` and `MAX_RECOLLECT_ROUNDS` are gone: `tool/research-stage.ts`
+and `research-workflow.ts` read `maxRechecks` and `maxRecollectRounds` from the service.
+`SessionEvent.Research` gained `resumed`, additive; `packages/core/src/research-run.ts` folds it by
+returning a `failed` run to `active` while keeping its completed stages, message identifiers, plan,
+and evidence, and refuses any other status through `ResumeUnavailableError`. `Info` gained
+`startedAt`, derived from the `Started` event the stream already carried rather than from a new one.
+`ResearchRun.resume` picks `fromStage` as the first stage without a completed entry, falling back to
+`report` when every stage completed. `research-workflow.ts` skips completed stages by rereading
+their submitted result from the durable message identifier, never reselects the profile
+(`routes.get(started.profile)`), and seeds the recollection count from the durable `collect`
+stage's reopenings so the loop budget is spent per run rather than per attempt. Cost and token
+ceilings are checked between rounds, so `BudgetExceededError` leaves evidence and completed stages
+intact and the run is itself resumable. Usage is read once at attempt start and accumulated per
+round thereafter; the report's Provenance section states the run total against its ceilings, each
+stage's own spend, and any stage that reached the step ceiling. `packages/opencode`'s
+`research` command gained `--resume [runID]` and the opt-in `--review-plan`, which prints the
+structured plan and waits; declining raises `PlanRejectedError`. `doctor` reports the six resolved
+ceilings.
+Automated evidence: 140 pass, 0 fail across `test/research-run.test.ts`,
+`test/research-workflow.test.ts`, `test/research-route.test.ts`, `test/research-evidence.test.ts`,
+`test/research-budget.test.ts`, `test/tool-research-stage.test.ts`, and `test/session-runner.test.ts`.
+`test/research-budget.test.ts` asserts the defaults, per-field merging across documents, schema
+rejection of a zero cost and an out-of-range step ceiling, and that the two loop ceilings accept
+zero. `test/research-run.test.ts` asserts that resuming refuses when no run exists, when the run is
+active, and when the stated identifier names a different run, and that a successful resume reports
+the first stage that never completed. `test/session-runner.test.ts` drives its ceiling from a
+configured `max_tool_calls_per_stage: 6`, which is what makes it evidence that the runner reads
+configuration rather than a constant. `test/research-workflow.test.ts` asserts the per-stage and
+run-level usage lines, that a capped stage says so, that the plan stage keeps its own ceiling rather
+than the configured one, and that spend is attributed to the first stage whose attempt a turn
+precedes, with turns predating `startedAt` excluded and an unsettled round counted toward the total
+but toward no stage. The full `packages/core` suite is 1149 pass, 7 skip, 6 fail, where all six
+failures are the `remote-e2e` host-key ACL condition recorded under Phase A and none is new.
+`packages/opencode`: `test/event-manifest.test.ts` counts 99 latest wire types and asserts
+`session.next.research.resumed` by name; `test/server/httpapi-sdk.test.ts` is 26 pass, 0 fail;
+`test/cli/research-process.test.ts` passes. `bun typecheck` passes in `packages/core` and
+`packages/opencode`.
+Manual evidence: the fold guard in `test/research-run.test.ts` still asserts the whole projection of
+a stream containing no new event type with `toEqual`; `startedAt` was added to its expectation
+without adding an event to its input, which is the check that the new field is derived rather than
+recorded. `test/server/httpapi-sdk.test.ts` needs `--timeout 30000` on this machine, but so does
+`HEAD` before this refactor: the same file times out on four research cases at the default 5000 ms
+without any of Phase A through C applied, and on three with them, so the timeouts are load-dependent
+and the read-once usage accounting made them fewer rather than more.
+Residual risk: Phase B's residual note that `MAX_RECOLLECT_ROUNDS` and `MAX_RECHECKS` are module
+constants is discharged — both are configuration now. Ceilings are checked between rounds, so a
+single round may overshoot before the run stops; the ceiling is a bound on what a run continues to
+spend, not on what it has spent. `spend()` attributes every turn after `startedAt` to the run, which
+would over-count a concurrent non-research turn in the same session; the workflow's
+`SessionBusyError` guard makes that unreachable today. The CLI's plan review is approve or decline
+only — the `PlanReview` contract carries an edited plan, but no `$EDITOR` round-trip exists in this
+repository and adding one is not this phase's work. `max_parallel_collectors` is resolved and
+reported but not yet acted on; parallel collection remains Phase D, which §12F discharges. Manual
+acceptance items 1 through 4 of the refactor plan — including forcing a report-stage failure to
+exercise `--resume`,
+and setting `max_tool_calls_per_stage` to 2 to see the cap-out reach provenance — are still
+unexercised against a live provider.
+
+## 12F. Research Evidence Refactor, Phase D
+
+Verified on 2026-07-28:
+
+Requirement: Collection can be split across several sessions running at once, without a child ever
+becoming a second place a run's state lives, and with the default configuration behaving exactly as
+before.
+Implementation: `packages/core/src/session.ts`'s `CreateInput` gained `parentID`, passed through to
+`SessionV1.SessionInfo.make`; the field and its index already existed in the schema and in
+`session/sql.ts`, so nothing was added to the data model. `SessionEvent.Research` gained
+`SubcollectionStarted { runID, round, childSessionID, requirementIDs }` and
+`SubcollectionSettled { childSessionID, outcome }`, both additive, both durable.
+`packages/core/src/research-run.ts` folds them into `Info.subcollections` — one entry per child with
+its round, its bucket, and `active` or `settled` — and refuses through `InvalidTransitionError` to
+open a subcollection outside an active collect stage, to open a second one for the same child, or to
+settle one that is not open. The pure helper `subcollectionStage(run, childSessionID)` returns the
+parent's collect stage only while an open entry names that child, and `ResearchRun.borrowed`
+resolves the whole grant in one place: it reads `parent_id` from the child's own session row, folds
+the parent's stream, and hands back the run, that stage, and the bucket. Both consumers read it —
+`session/runner/llm.ts` for the child's tools, model route, and step ceiling, and
+`tool/research-stage.ts` for submission acceptance and evidence reads — so the child's authority has
+one definition rather than two. `research-workflow.ts` deals the plan's requirements round-robin
+into `max_parallel_collectors` buckets, but only on the first collect round and only when the run
+has not split before; each bucket gets a child session created with `parentID`, the children run
+under `Effect.forEach(..., { concurrency: N })`, and their turns are charged to the parent's budget.
+Evidence harvested from a child is recorded against the parent run with `collectedSessionID` naming
+the child. A child failure is caught per bucket, settles as `failed`, and leaves the parent to run
+the round itself; the parent's prompt gains a "What your subcollectors reported" section, and a
+child's prompt gains "Requirements assigned to you". `render()` lists every child in the report's
+Provenance section with its round, outcome, and bucket. With `max_parallel_collectors` at its
+default of `1` the split is a single bucket, which is the unsplit path.
+Automated evidence: 145 pass, 0 fail, 449 expect() calls across `test/research-run.test.ts`,
+`test/research-workflow.test.ts`, `test/research-route.test.ts`, `test/research-evidence.test.ts`,
+`test/research-budget.test.ts`, `test/tool-research-stage.test.ts`, and `test/session-runner.test.ts`
+— 140 before this phase. `test/research-run.test.ts` asserts that a subcollection cannot open before
+the collect stage or during the plan stage, that two buckets open cleanly and a duplicate child does
+not, that `subcollectionStage` hands the collect stage to a named child and nothing to a stranger,
+and that settling — which cannot happen twice — withdraws the stage. `test/tool-research-stage.test.ts`
+builds real parent and child sessions rather than stubbing the parent link, and asserts that a
+sibling sharing the same `parentID` is refused, that the child is held to its own bucket and not to
+the requirement its peer was given, that the parent is still held to the whole plan, and that
+settling ends the child's ability to submit. `test/research-workflow.test.ts` asserts that a split
+run names each child in provenance, including one whose child failed, and that a run which never
+split says nothing about splitting. `packages/opencode`'s `test/server/httpapi-sdk.test.ts` drives a
+two-bucket run end to end against the test provider with `max_parallel_collectors: 2`, matching each
+reply on the assignment block that opened its turn because the two children race; it asserts both
+children succeeded, that provenance names them, and — reading the parent's history back through the
+SDK — that both `subcollection.started` events and both `subcollection.settled` events are on the
+parent session, which is the check that a child kept no run of its own. That file is 27 pass, 0 fail
+(26 before this phase). `test/event-manifest.test.ts` counts 101 latest wire types, 99 before, and
+asserts both new names. The full `packages/core` suite is 1152 pass, 7 skip, 7 fail: six are the
+`remote-e2e` host-key ACL condition recorded under Phase A, and the seventh, `Npm.add > reifies when
+package cache directory exists without the package installed`, is a load-dependent timeout that
+passes on its own. `bun typecheck` passes in `packages/core` and `packages/opencode`.
+Manual evidence: the fold guard in `test/research-run.test.ts` still asserts the whole projection of
+a stream containing no new event type with `toEqual`, now carrying `subcollections: []`, which is the
+executable form of the constraint that only additive events were introduced. `test/remote.test.ts`
+and `test/tool-remote-run.test.ts` are 9 pass, 0 fail, confirming the remote side did not move.
+`test/cli/research-process.test.ts` passes, which is the default-configuration path: it never sets
+`max_parallel_collectors`, so it is evidence that the unsplit run is unchanged.
+Residual risk: the refactor plan's identified risk is undischarged — a split run raises `remote_run`
+permission prompts once per child, because each child asks for its own grants and the plan's
+`targets.hosts` are not pre-asserted in the parent before the fan-out. The permission invariant
+itself is unweakened: a child goes through the same runner and the same `permission.assert`, and a
+prompt still cannot introduce a hostname that is not a configured alias. The mitigation is
+documented instead: both `docs/resagent-configuration.md` and `docs/resagent-usage.md` say to leave
+`max_parallel_collectors` at `1` for runs that reach remote hosts. Only the first collection round
+splits; a reopened round is collected by the parent alone, so a gap that needs wide re-collection
+gets no parallelism. Requirements are dealt round-robin with no notion of cost, so one bucket may
+carry all the expensive requirements and the round waits on it. A child's turns are charged to the
+run's budget, but the ceiling is checked between rounds, so N children may overshoot together where
+one would have stopped. Splitting has been exercised against the test provider only, and the manual
+acceptance items of the refactor plan remain unexercised against a live one.
+
 ## 13. Completion Audit Template
 
 For each checked requirement, record:

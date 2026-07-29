@@ -254,6 +254,26 @@ A research run is a session-owned workflow:
 
 The workflow uses ordinary OpenCode messages and canonical tools. Durable provider orchestration stays in the session runner; the workflow must not create a second in-memory agent loop.
 
+A stage finishes by calling its own submission tool — `research_plan`, `research_collect`, `research_analyze`, `research_verify`, or `research_report` — whose input schema is that stage's output contract. The tool registry cannot vary a tool's schema per session, so the active stage is selected by permission: the runner allows exactly one submission tool and denies the rest. A stage with no settled submission call is unfinished; nothing is inferred from prose. A settled submission ends the turn, because the stage result is already durable and a further step would only spend a provider call.
+
+Evidence is harvested passively. After each turn the workflow reads the settled tool calls of the assistant messages it produced and records one durable evidence row per retrieved source: `webfetch` and `websearch` produce a web or search source, `read` a file source, and `remote_run` one remote source per host. Each row carries a bounded excerpt and the digest of the full retrieved text. The model neither declares nor names its own evidence, so a stage cannot omit or invent what it consulted.
+
+Stages after `plan` cite evidence by identifier. Submission is rejected in-turn when a citation names an identifier the run never recorded, when a coverage verdict is missing for a planned requirement, or when a plan's identifiers do not resolve. `research_evidence` reads the stored excerpts by identifier.
+
+`verify` additionally has `research_recheck`, which retrieves one already-recorded source again and reports whether its digest moved. It takes an evidence identifier, never a URL, path, or host alias, and re-runs the retrieval through the same registered tool the collector used. It therefore reaches nothing the collector did not already reach and introduces no new permission surface: a remote recheck still asks the same `<alias> <command>` permission. Rechecks are capped per run.
+
+`analyze` and `verify` report unmet requirements as gaps. A run with gaps left and its recollection budget unspent reopens `collect` for another round aimed at those gaps, then reruns the reporting stage that raised them. Reopening is its own durable event, never a second stage start, and a stage's provider attempts stay one flat history across rounds so provenance shows every round. A round that fails to submit leaves the previous round's result standing and the gap reported, rather than failing the run. `verify` gaps do not rerun `analyze`: verify already rules against the whole evidence index, so re-running analysis in between would double the round's cost without widening what verify can see.
+
+Collection may be split across child sessions when `max_parallel_collectors` exceeds `1`. The first collection round deals the plan's requirements round-robin into that many buckets and opens one child session per bucket, each a full session with its `parentID` set to the run's session, so a split collector goes through the same runner, the same permission checks, and the same evidence harvest as an unsplit one. A child has no research run of its own: it borrows the parent's collect stage, and only while the parent's stream holds an open subcollection naming it, so pointing a session's `parentID` at a research run grants that session nothing. What the child borrows is bounded by its bucket — it answers for those requirements alone — and what it produces is recorded against the parent run, which stays the only place a run's state lives. Opening and settling a subcollection are durable events on the parent. A child that fails settles as failed and costs its bucket rather than the run: the parent still runs the round itself, shown what each child reported. Later rounds, including reopened collection, do not split. Splitting multiplies the permission prompts a run can raise, because each child asks for its own remote grants.
+
+The plan and the evidence index are durable events, not message history. A stage prompt is rebuilt from them and from the prior stages' submitted results, so a compacted session loses no stage context. A reopened stage is shown only the stages that precede it, so the downstream results its rerun invalidated stay out of the prompt.
+
+A run states its ceilings in `research.budget`: total cost, total tokens, provider steps per stage round, recollection rounds, rechecks, and parallel collectors. Cost and tokens are read back from the session's own assistant turns, bounded by the run's start, rather than tallied as the run goes, so one derivation answers both the ceiling check and the report. They are checked between stage rounds, never inside one: a run that reaches a ceiling fails with its evidence and its completed stages intact. Reaching the step ceiling withdraws a stage's tools, which is stated in the report rather than left to be inferred from a stage that stopped early. The plan stage keeps its own small reconnaissance ceiling.
+
+A failed run resumes; it does not restart. Resuming is its own durable event that returns the run to active and touches nothing else: the completed stages keep the messages they closed on, the plan stands, and the evidence index carries over. The run picks up at the first stage that never completed, rereading the earlier stages' results from the turns they closed on, and keeps the question and profile it started with so resuming cannot move a stage onto a different model. Only a failed run resumes. A run that failed after its report stage completed resumes at the export alone.
+
+Human review of the plan is opt-in and off by default. When it is on, the run pauses after the plan is durable and before collection begins. An approved review may replace the generated plan with an edited one, which the run records; a declined one fails the run with its plan intact, so resuming starts from collection rather than replanning.
+
 ### 6.7 Optional Remote Workspace Mode
 
 OpenCode already has an experimental remote `WorkspaceAdapter` target and proxy path. ResAgent may later add an SSH adapter that deploys and forwards a remote sidecar. This mode is deferred until credential scoping, host lifecycle, version negotiation, and recovery are specified and tested.
@@ -283,6 +303,14 @@ New top-level fields:
   "research": {
     "default_profile": "balanced",
     "profiles": {},
+    "budget": {
+      "max_cost": 5.0,
+      "max_tokens": 2000000,
+      "max_tool_calls_per_stage": 24,
+      "max_recollect_rounds": 1,
+      "max_rechecks": 8,
+      "max_parallel_collectors": 1,
+    },
   },
 }
 ```
@@ -296,6 +324,8 @@ Validation rules:
 - identity and known-hosts paths support config variable expansion but are never sent to the model;
 - `host_key` defaults to `strict`; `accept-new` requires explicit configuration;
 - duplicate route entries are rejected during normalization.
+
+Every `research.budget` field is optional and defaults as shown. Later documents win per field rather than replacing the section, so a project can raise one ceiling without restating the rest. `max_recollect_rounds` and `max_rechecks` accept `0`, which turns those loops off. `max_parallel_collectors` above `1` splits the first collection round as described in §6.6.
 
 Config documents are applied from lowest to highest priority. A later host alias replaces the complete earlier entry for that alias; fields are not partially merged across files. Host inventory is captured when a Location opens, matching existing V2 config lifecycle semantics.
 
@@ -315,6 +345,7 @@ Structured logs include:
 - selected research profile and all five resolved role routes;
 - OpenSSH client availability and version;
 - host alias resolution plus referenced identity and known-hosts files;
+- the resolved research budget ceilings;
 - report-directory writability.
 
 `doctor` does not connect to remote hosts or send a model inference request.

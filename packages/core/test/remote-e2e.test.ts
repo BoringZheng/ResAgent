@@ -172,8 +172,9 @@ describe("Remote OpenSSH E2E", () => {
       expect(resumed.result.type).toBe("content")
       if (resumed.result.type !== "content") throw new Error("Expected corrected remote command content")
       expect(resumed.result.value[0]).toMatchObject({ type: "text", text: "[lab-a] ok (exit 0)" })
-      expect(resumed.result.value[1]?.type).toBe("text")
-      expect(resumed.result.value[1]?.text.trim()).toBe("corrected")
+      const stdout = resumed.result.value[1]
+      if (stdout?.type !== "text") throw new Error("Expected corrected remote command stdout text")
+      expect(stdout.text.trim()).toBe("corrected")
       expect(resumed.output).toBeDefined()
       if (!resumed.output) throw new Error("Expected corrected remote command output")
       expect(resumed.output.structured).toMatchObject({

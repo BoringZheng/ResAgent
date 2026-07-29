@@ -83,6 +83,38 @@ resagent research --session ses_... "Answer the follow-up."
 `--continue` and `--session` cannot be used together. A session is bound to the directory where it
 was created.
 
+### Resume A Failed Run
+
+A run that fails keeps everything it established: its plan, its evidence, and every stage that
+completed. `--resume` picks it back up at the first stage that never finished.
+
+```bash
+resagent research --resume
+```
+
+Without `--session`, `--resume` continues the newest session in the current directory. Name the run
+to refuse to resume anything else:
+
+```bash
+resagent research --session ses_... --resume run_...
+```
+
+A resumed run keeps the question and the profile it started with, so resuming never moves a stage
+onto a different model. Only a failed run can be resumed; an active one is refused. A run that
+stopped at its budget resumes once the ceiling in `research.budget` is raised.
+
+### Review The Plan Before Collecting
+
+Research is fully automatic by default. `--review-plan` pauses after the plan stage, prints the
+structured plan, and waits:
+
+```bash
+resagent research --review-plan "Investigate the regression."
+```
+
+Declining leaves the run failed with its plan recorded, so `--resume` starts from collection rather
+than replanning.
+
 ## Research In The TUI
 
 Start the TUI:
@@ -178,10 +210,37 @@ The default report path is:
 Reports include:
 
 - the final answer;
+- unmet requirements, when the run finished without satisfying every requirement its plan defined;
 - stage outcomes;
 - provider-attempt provenance;
+- the reason a stage was reopened, when a run went back to collect more evidence;
+- what the run spent, in total and per stage, against the ceilings in `research.budget`;
+- any stage that reached its step ceiling, so a stage that stopped gathering early says so;
+- the child sessions collection was split across, when it was split, each with its requirements and
+  whether it succeeded;
 - relevant tool and remote evidence;
+- an evidence list giving each source an identifier, its origin, and a digest of the full retrieved
+  text, so a citation stays checkable after the run, with rechecked rows naming the row they
+  replaced and whether the source had changed;
 - qualified conclusions when evidence conflicts.
+
+Evidence is recorded from the tool calls the run actually made, not from what the model says it
+consulted. A requirement the run could not satisfy appears under unmet requirements rather than
+being dropped silently.
+
+When analysis or verification reports a gap, the run goes back and collects once more, aimed at
+that gap, then reruns the stage that raised it. The budget is one such round per run, so a gap that
+survives it is reported rather than chased. Verification can also recheck an already-collected
+source to see whether it still says what it said; a recheck can only re-retrieve a source the run
+already has, so it never reaches anywhere the collection stage did not.
+
+Collection runs in one session unless `research.budget.max_parallel_collectors` is raised above `1`.
+Raised, the first collection round is split: the plan's requirements are dealt into that many
+buckets and each bucket is collected by its own child session, concurrently. Every child is listed
+in the report's provenance with the requirements it was given and how it ended, and the evidence it
+gathered belongs to the run, not to the child. A child that fails costs its bucket rather than the
+run. Splitting also multiplies the permission prompts a run can raise, since each child asks for its
+own remote grants, so leave it at `1` for runs that reach remote hosts.
 
 Reports are ordinary Markdown files. They can be reviewed, versioned, or moved after the run.
 

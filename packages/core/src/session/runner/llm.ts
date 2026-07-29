@@ -25,7 +25,9 @@ import { SkillGuidance } from "../../skill/guidance"
 import { ReferenceGuidance } from "../../reference/guidance"
 import { ResearchRoute } from "../../research-route"
 import { ResearchRun } from "../../research-run"
+import { ResearchBudget } from "../../research-budget"
 import { ToolRegistry } from "../../tool/registry"
+import { ResearchStageTool } from "../../tool/research-stage"
 import { ToolOutputStore } from "../../tool-output-store"
 import { SessionContextEpoch } from "../context-epoch"
 import { SessionCompaction } from "../compaction"
@@ -111,6 +113,7 @@ const layer = Layer.effect(
     const snapshots = yield* Snapshot.Service
     const researchRoutes = yield* ResearchRoute.Service
     const researchRuns = yield* ResearchRun.Service
+    const researchBudget = yield* ResearchBudget.Service
     const db = (yield* Database.Service).db
     const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
@@ -211,21 +214,28 @@ const layer = Layer.effect(
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
       const research = yield* researchRuns.current(session.id)
-      const researchStage =
-        research?.status === "active" && research.stage?.status === "active" ? research.stage : undefined
-      const maxSteps = researchStage ? Math.min(agent.info?.steps ?? 6, 6) : agent.info?.steps
+      const own = research?.status === "active" && research.stage?.status === "active" ? research.stage : undefined
+      /**
+       * A subcollection child has no run of its own. It borrows its parent's collect stage for the
+       * tools, the model route, and the step ceiling, and records nothing: the parent's stream stays
+       * the run's only ledger. The grant is resolved from the parent's events, so pointing
+       * `parentID` at a research session buys a session no research authority by itself.
+       */
+      const borrowed = own ? undefined : yield* researchRuns.borrowed(session.id)
+      const researchStage = own ?? borrowed?.stage
+      const researchProfile = own ? research?.profile : borrowed?.run.profile
+      const maxSteps = researchStage
+        ? Math.min(
+            agent.info?.steps ?? ResearchBudget.steps(researchBudget.limits, researchStage.stage),
+            ResearchBudget.steps(researchBudget.limits, researchStage.stage),
+          )
+        : agent.info?.steps
       const isLastStep = maxSteps !== undefined && currentStep >= maxSteps
       const permissions = researchStage
-        ? researchStage.stage === "collect"
-          ? PermissionV2.merge(agent.info?.permissions ?? [], [
-              { action: "question", resource: "*", effect: "deny" },
-              { action: "todowrite", resource: "*", effect: "deny" },
-              { action: "plan_enter", resource: "*", effect: "deny" },
-              { action: "plan_exit", resource: "*", effect: "deny" },
-              { action: "edit", resource: "*", effect: "deny" },
-            ])
-          : PermissionV2.merge(agent.info?.permissions ?? [], [{ action: "*", resource: "*", effect: "deny" }])
-        : agent.info?.permissions
+        ? PermissionV2.merge(agent.info?.permissions ?? [], researchRules(researchStage.stage))
+        : PermissionV2.merge(agent.info?.permissions ?? [], [
+            { action: "research_*", resource: "*", effect: "deny" },
+          ])
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const routed = researchStage
@@ -241,9 +251,9 @@ const layer = Layer.effect(
           entry: unsettled.entry,
         })
       const candidates = routed
-      if (research && researchStage && candidates?.length === 0)
+      if (researchProfile && researchStage && candidates?.length === 0)
         return yield* new ResearchRoute.RouteUnavailableError({
-          profile: research.profile,
+          profile: researchProfile,
           role: researchStage.role,
           entries: researchStage.route.map((entry) => ConfigResearch.RouteEntry.make(entry)),
         })
@@ -321,6 +331,9 @@ const layer = Layer.effect(
           withPublication(publisher.publish(event, outputPaths))
         const hasNext = candidate !== undefined && offset + 1 < (candidates?.length ?? 0)
         let overflowFailure: ProviderErrorEvent | undefined
+        // A settled submission tool ends its research stage. Stepping again would spend a provider
+        // turn on output the workflow has already durably recorded and will never read.
+        let submitted = false
         const providerStream = llm.stream(request).pipe(
           Stream.runForEach((event) =>
             Effect.gen(function* () {
@@ -357,8 +370,14 @@ const layer = Layer.effect(
                     call: event,
                   }),
                 ).pipe(
-                  Effect.flatMap((settlement) =>
-                    publish(
+                  Effect.flatMap((settlement) => {
+                    if (
+                      researchStage &&
+                      event.name === ResearchStageTool.stageTools[researchStage.stage] &&
+                      settlement.result.type !== "error"
+                    )
+                      submitted = true
+                    return publish(
                       LLMEvent.toolResult({
                         id: event.id,
                         name: event.name,
@@ -366,8 +385,8 @@ const layer = Layer.effect(
                         output: settlement.output,
                       }),
                       settlement.outputPaths ?? [],
-                    ),
-                  ),
+                    )
+                  }),
                 ),
               ).pipe(FiberSet.run(toolFibers))
             }),
@@ -471,14 +490,17 @@ const layer = Layer.effect(
             if (stream._tag === "Failure") return yield* Effect.failCause(stream.cause)
             if (settled._tag === "Failure" && Cause.hasInterrupts(settled.cause))
               return yield* Effect.failCause(settled.cause)
-            return { needsContinuation: !publisher.hasProviderError() && needsContinuation, step: currentStep }
+            return {
+              needsContinuation: !publisher.hasProviderError() && needsContinuation && !submitted,
+              step: currentStep,
+            }
           }),
         )
       })
 
       if (initialOffset >= (candidates?.length ?? Number.POSITIVE_INFINITY))
         return yield* new ResearchRoute.RouteUnavailableError({
-          profile: research!.profile,
+          profile: researchProfile!,
           role: researchStage!.role,
           entries: researchStage!.route.map((entry) => ConfigResearch.RouteEntry.make(entry)),
         })
@@ -567,6 +589,46 @@ export const node = makeLocationNode({
     Snapshot.node,
     ResearchRoute.node,
     ResearchRun.node,
+    ResearchBudget.node,
     Database.node,
   ],
 })
+
+/** Read-only tools the planner may use to ground its plan in what actually exists. */
+const RECON_TOOLS = ["glob", "grep", "read", "websearch"]
+
+/**
+ * A research stage may only finish by calling its own submission tool, so the ruleset denies every
+ * other `research_*` tool. The registry materializes tools without session context, which makes
+ * permission the only place the active stage can be expressed; `whollyDisabled` resolves each tool
+ * against the last matching rule, so "deny everything, then allow these" reads exactly as written.
+ */
+function researchRules(stage: ResearchRun.Stage): PermissionV2.Ruleset {
+  const submit: PermissionV2.Ruleset = [
+    { action: "research_*", resource: "*", effect: "deny" },
+    { action: ResearchStageTool.stageTools[stage], resource: "*", effect: "allow" },
+    // The planner has no evidence to read yet; every later stage cites it and needs the full text.
+    ...(stage === "plan"
+      ? []
+      : [{ action: ResearchStageTool.evidenceName, resource: "*", effect: "allow" as const }]),
+    // Only the verifier rechecks. It re-runs a stored source through the tool that first retrieved
+    // it, so it reaches nothing the collector did not already reach.
+    ...(stage === "verify" ? [{ action: ResearchStageTool.recheckName, resource: "*", effect: "allow" as const }] : []),
+  ]
+  if (stage === "collect")
+    return [
+      { action: "question", resource: "*", effect: "deny" },
+      { action: "todowrite", resource: "*", effect: "deny" },
+      { action: "plan_enter", resource: "*", effect: "deny" },
+      { action: "plan_exit", resource: "*", effect: "deny" },
+      { action: "edit", resource: "*", effect: "deny" },
+      ...submit,
+    ]
+  if (stage === "plan")
+    return [
+      { action: "*", resource: "*", effect: "deny" },
+      ...RECON_TOOLS.map((action) => ({ action, resource: "*", effect: "allow" as const })),
+      ...submit,
+    ]
+  return [{ action: "*", resource: "*", effect: "deny" }, ...submit]
+}

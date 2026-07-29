@@ -41,6 +41,7 @@ import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
+import { ConfigResearch } from "@opencode-ai/core/config/research"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import {
   SessionContextEpochTable,
@@ -249,6 +250,11 @@ const config = Layer.succeed(
             compaction: new ConfigCompaction.Info({
               buffer: 3_000,
               keep: new ConfigCompaction.Keep({ tokens: 1_000 }),
+            }),
+            // Low enough to reach in a test, which is also the assertion that the ceiling is read
+            // from configuration rather than hardcoded in the runner.
+            research: new ConfigResearch.Info({
+              budget: new ConfigResearch.Budget({ max_tool_calls_per_stage: 6 }),
             }),
           }),
         }),
@@ -3303,7 +3309,7 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("caps collect at six provider turns and forces a final text response", () =>
+  it.effect("caps collect at the configured provider turns and forces a final text response", () =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service

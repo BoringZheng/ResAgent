@@ -359,4 +359,444 @@ describe("ResearchRun", () => {
       }),
     15_000,
   )
+
+  /**
+   * The event stream is append-only by decision: a run durably written before evidence and plan
+   * events existed must still fold to exactly the state it folded to then. This asserts the whole
+   * projection, not a subset, so any change to an existing branch's semantics fails here.
+   */
+  it.effect("folds a stream that predates the evidence and plan events unchanged", () =>
+    Effect.gen(function* () {
+      const research = yield* ResearchRun.Service
+      const events = yield* EventV2.Service
+      const legacy = SessionV2.ID.make("ses_research_legacy")
+      const roles = [
+        ["plan", "planner"],
+        ["collect", "collector"],
+        ["analyze", "analyst"],
+        ["verify", "verifier"],
+        ["report", "writer"],
+      ] as const
+      let clock = 0
+      const at = () => DateTime.makeUnsafe(clock++)
+      yield* events.publish(SessionEvent.Research.Started, {
+        sessionID: legacy,
+        runID: "run_legacy",
+        profile: "balanced",
+        question: "Does an old run still fold?",
+        timestamp: at(),
+      })
+      for (const [stage, role] of roles) {
+        yield* events.publish(SessionEvent.Research.StageStarted, {
+          sessionID: legacy,
+          runID: "run_legacy",
+          stage,
+          role,
+          route: ["test/primary", "test/backup"],
+          timestamp: at(),
+        })
+        yield* events.publish(SessionEvent.Research.ProviderAttempted, {
+          sessionID: legacy,
+          runID: "run_legacy",
+          stage,
+          role,
+          turnID: `turn_${stage}`,
+          entry: "test/primary",
+          attempt: 1,
+          timestamp: at(),
+        })
+        yield* events.publish(SessionEvent.Research.ProviderAttemptSettled, {
+          sessionID: legacy,
+          runID: "run_legacy",
+          stage,
+          role,
+          turnID: `turn_${stage}`,
+          entry: "test/primary",
+          attempt: 1,
+          outcome: "succeeded",
+          replaySafe: false,
+          messageID: SessionMessage.ID.make(`msg_${stage}`),
+          timestamp: at(),
+        })
+        yield* events.publish(SessionEvent.Research.StageCompleted, {
+          sessionID: legacy,
+          runID: "run_legacy",
+          stage,
+          messageID: SessionMessage.ID.make(`msg_${stage}`),
+          timestamp: at(),
+        })
+      }
+      yield* events.publish(SessionEvent.Research.Completed, {
+        sessionID: legacy,
+        runID: "run_legacy",
+        reportPath: "/reports/legacy.md",
+        timestamp: at(),
+      })
+
+      const folded: ResearchRun.StageInfo[] = roles.map(([stage, role]) => ({
+        stage,
+        role,
+        route: ["test/primary", "test/backup"],
+        attempts: [
+          {
+            turnID: ResearchRun.TurnID.make(`turn_${stage}`),
+            entry: "test/primary",
+            attempt: 1,
+            status: "succeeded",
+            replaySafe: false,
+            messageID: SessionMessage.ID.make(`msg_${stage}`),
+          },
+        ],
+        status: "completed",
+        // A stream with no `StageReopened` still folds to a single round.
+        reopenings: [],
+        messageID: SessionMessage.ID.make(`msg_${stage}`),
+      }))
+      expect(yield* research.current(legacy)).toEqual({
+        id: ResearchRun.ID.make("run_legacy"),
+        sessionID: legacy,
+        profile: "balanced" as never,
+        question: "Does an old run still fold?",
+        status: "completed",
+        reportPath: "/reports/legacy.md",
+        // Derived from the `Started` event the old stream already carried, not from a new one.
+        startedAt: DateTime.makeUnsafe(0),
+        stages: folded,
+        stage: folded.at(-1),
+        evidence: [],
+        // A stream with no `SubcollectionStarted` folds to a run that never split collection.
+        subcollections: [],
+      })
+    }),
+  )
+
+  it.effect("records harvested evidence once per tool call and source", () =>
+    Effect.gen(function* () {
+      const research = yield* ResearchRun.Service
+      const evidenceSession = SessionV2.ID.make("ses_research_evidence")
+      const run = yield* research.start({
+        sessionID: evidenceSession,
+        profile: "balanced" as never,
+        question: "Record evidence",
+      })
+      const candidate = {
+        toolCallID: "call_one",
+        tool: "webfetch",
+        source: { kind: "web" as const, url: "https://example.test/a" },
+        excerpt: "body",
+        digest: "d".repeat(64),
+        truncated: false,
+      }
+
+      expect(
+        yield* research
+          .recordEvidence({
+            sessionID: evidenceSession,
+            runID: run.id,
+            stage: "collect",
+            collectedSessionID: evidenceSession,
+            messageID: SessionMessage.ID.make("msg_collect"),
+            candidates: [candidate],
+          })
+          .pipe(Effect.flip),
+      ).toBeInstanceOf(ResearchRun.InvalidTransitionError)
+
+      yield* research.startStage({
+        sessionID: evidenceSession,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["test/model"],
+      })
+      const recorded = yield* research.recordEvidence({
+        sessionID: evidenceSession,
+        runID: run.id,
+        stage: "plan",
+        collectedSessionID: evidenceSession,
+        messageID: SessionMessage.ID.make("msg_plan"),
+        candidates: [candidate, { ...candidate, toolCallID: "call_two" }],
+      })
+      expect(recorded).toHaveLength(2)
+
+      // Replaying the same turn must not duplicate rows, so a retried harvest is safe.
+      expect(
+        yield* research.recordEvidence({
+          sessionID: evidenceSession,
+          runID: run.id,
+          stage: "plan",
+          collectedSessionID: evidenceSession,
+          messageID: SessionMessage.ID.make("msg_plan"),
+          candidates: [candidate],
+        }),
+      ).toEqual([])
+      expect((yield* research.current(evidenceSession))?.evidence.map((item) => item.id)).toEqual(
+        recorded.map((item) => item.id),
+      )
+    }),
+  )
+
+  it.effect("keeps the plan outside the message history and lets a later write supersede it", () =>
+    Effect.gen(function* () {
+      const research = yield* ResearchRun.Service
+      const planSession = SessionV2.ID.make("ses_research_plan")
+      const run = yield* research.start({
+        sessionID: planSession,
+        profile: "balanced" as never,
+        question: "Record a plan",
+      })
+
+      expect(
+        yield* research
+          .recordPlan({
+            sessionID: planSession,
+            runID: run.id,
+            messageID: SessionMessage.ID.make("msg_plan"),
+            plan: { stage: "plan" },
+          })
+          .pipe(Effect.flip),
+      ).toBeInstanceOf(ResearchRun.InvalidTransitionError)
+
+      yield* research.startStage({
+        sessionID: planSession,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        route: ["test/model"],
+      })
+      yield* research.recordPlan({
+        sessionID: planSession,
+        runID: run.id,
+        messageID: SessionMessage.ID.make("msg_plan"),
+        plan: { stage: "plan", requirements: [{ id: "r1" }] },
+      })
+      yield* research.recordPlan({
+        sessionID: planSession,
+        runID: run.id,
+        messageID: SessionMessage.ID.make("msg_plan_v2"),
+        plan: { stage: "plan", requirements: [{ id: "r1" }, { id: "r2" }] },
+      })
+
+      expect((yield* research.current(planSession))?.plan).toEqual({
+        stage: "plan",
+        requirements: [{ id: "r1" }, { id: "r2" }],
+      })
+    }),
+  )
+
+  it.effect("reopens a completed stage for another round without restarting it", () =>
+    Effect.gen(function* () {
+      const research = yield* ResearchRun.Service
+      const reopenSession = SessionV2.ID.make("ses_research_reopen")
+      const run = yield* research.start({
+        sessionID: reopenSession,
+        profile: "balanced" as never,
+        question: "Close a gap",
+      })
+      const round = (stage: ResearchRun.Stage, role: ResearchRun.Role, suffix: string) =>
+        Effect.gen(function* () {
+          const turnID = ResearchRun.TurnID.make(`turn_${suffix}`)
+          const messageID = SessionMessage.ID.make(`msg_${suffix}`)
+          yield* research.startAttempt({ sessionID: reopenSession, runID: run.id, stage, role, turnID, entry: "test/model", attempt: 1 })
+          yield* research.settleAttempt({
+            sessionID: reopenSession,
+            runID: run.id,
+            stage,
+            role,
+            turnID,
+            entry: "test/model",
+            attempt: 1,
+            outcome: "succeeded",
+            replaySafe: false,
+            messageID,
+          })
+          yield* research.completeStage({ sessionID: reopenSession, runID: run.id, stage, messageID })
+          return messageID
+        })
+
+      yield* research.startStage({ sessionID: reopenSession, runID: run.id, stage: "plan", role: "planner", route: ["test/model"] })
+      yield* round("plan", "planner", "plan")
+      yield* research.startStage({ sessionID: reopenSession, runID: run.id, stage: "collect", role: "collector", route: ["test/model"] })
+      const first = yield* round("collect", "collector", "collect1")
+
+      // A stage that never completed, and a stage that is not there at all, cannot be reopened.
+      expect(
+        yield* research
+          .reopenStage({ sessionID: reopenSession, runID: run.id, stage: "analyze", reason: "no" })
+          .pipe(Effect.flip),
+      ).toBeInstanceOf(ResearchRun.InvalidTransitionError)
+
+      expect(
+        yield* research.reopenStage({ sessionID: reopenSession, runID: run.id, stage: "collect", reason: "analyze reported 1 unmet requirement" }),
+      ).toBe(2)
+      const reopened = yield* research.current(reopenSession)
+      expect(reopened?.stages.map((item) => item.stage)).toEqual(["plan", "collect"])
+      expect(reopened?.stage).toMatchObject({
+        stage: "collect",
+        status: "active",
+        messageID: undefined,
+        reopenings: [{ round: 2, reason: "analyze reported 1 unmet requirement", fromAttempt: 1 }],
+      })
+
+      // The earlier round's message is no longer a valid completion: a round closes on its own turn.
+      expect(
+        yield* research
+          .completeStage({ sessionID: reopenSession, runID: run.id, stage: "collect", messageID: first })
+          .pipe(Effect.flip),
+      ).toBeInstanceOf(ResearchRun.InvalidTransitionError)
+
+      const second = yield* round("collect", "collector", "collect2")
+      const settled = yield* research.current(reopenSession)
+      expect(settled?.stages.map((item) => item.stage)).toEqual(["plan", "collect"])
+      expect(settled?.stages.at(-1)).toMatchObject({ status: "completed", messageID: second })
+      // Attempts stay a flat history, so provenance still shows both rounds.
+      expect(settled?.stages.at(-1)?.attempts).toHaveLength(2)
+      expect(ResearchRun.currentRoundAttempts(settled!.stages.at(-1)!).map((item) => item.messageID)).toEqual([second])
+    }),
+  )
+
+  it.effect("resumes a failed run at the first stage that never completed", () =>
+    Effect.gen(function* () {
+      const research = yield* ResearchRun.Service
+      const session = SessionV2.ID.make("ses_research_resume")
+
+      // Nothing to resume yet: the session has never had a run.
+      expect(yield* research.resume({ sessionID: session }).pipe(Effect.flip)).toBeInstanceOf(
+        ResearchRun.ResumeUnavailableError,
+      )
+
+      const run = yield* research.start({
+        sessionID: session,
+        profile: "balanced" as never,
+        question: "Survive a failure",
+      })
+      const messageID = SessionMessage.ID.make("msg_plan")
+      const turnID = ResearchRun.TurnID.make("turn_plan")
+      yield* research.startStage({ sessionID: session, runID: run.id, stage: "plan", role: "planner", route: ["test/model"] })
+      yield* research.startAttempt({ sessionID: session, runID: run.id, stage: "plan", role: "planner", turnID, entry: "test/model", attempt: 1 })
+      yield* research.settleAttempt({
+        sessionID: session,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        turnID,
+        entry: "test/model",
+        attempt: 1,
+        outcome: "succeeded",
+        replaySafe: false,
+        messageID,
+      })
+      yield* research.recordPlan({ sessionID: session, runID: run.id, messageID, plan: { subquestions: [] } })
+      yield* research.completeStage({ sessionID: session, runID: run.id, stage: "plan", messageID })
+      yield* research.startStage({ sessionID: session, runID: run.id, stage: "collect", role: "collector", route: ["test/model"] })
+
+      // An active run is not resumable: resuming is what a failure earns, not a way to restart.
+      expect(yield* research.resume({ sessionID: session }).pipe(Effect.flip)).toBeInstanceOf(
+        ResearchRun.ResumeUnavailableError,
+      )
+
+      yield* research.fail({ sessionID: session, runID: run.id, message: "collector went away" })
+      // A resume that names the wrong run is refused rather than silently redirected.
+      expect(
+        yield* research.resume({ sessionID: session, runID: ResearchRun.ID.make("run_other") }).pipe(Effect.flip),
+      ).toBeInstanceOf(ResearchRun.RunMismatchError)
+
+      const resumed = yield* research.resume({ sessionID: session, runID: run.id })
+      expect(resumed).toMatchObject({ id: run.id, status: "active", error: undefined })
+      // Everything the failed attempt established stands, so resuming pays only for what was lost.
+      expect(resumed.plan).toEqual({ subquestions: [] })
+      expect(resumed.stages.map((item) => [item.stage, item.status])).toEqual([
+        ["plan", "completed"],
+        ["collect", "active"],
+      ])
+      expect(resumed.stages[0]?.messageID).toBe(messageID)
+    }),
+  )
+
+  /**
+   * A child session collects on the parent's behalf, so the parent's stream is where the grant
+   * lives. `subcollectionStage` is the whole of that authority: pointing `parentID` at a research
+   * session buys nothing, because only an open entry the parent itself wrote hands over the stage.
+   */
+  it.effect("grants a named child the collect stage and withdraws it on settlement", () =>
+    Effect.gen(function* () {
+      const research = yield* ResearchRun.Service
+      const parent = SessionV2.ID.make("ses_research_fanout")
+      const childA = SessionV2.ID.make("ses_research_child_a")
+      const childB = SessionV2.ID.make("ses_research_child_b")
+      const stranger = SessionV2.ID.make("ses_research_stranger")
+      const run = yield* research.start({ sessionID: parent, profile: "balanced" as never, question: "Split it" })
+
+      // Collection cannot be split before there is a collect stage to split.
+      expect(
+        yield* research
+          .startSubcollection({ sessionID: parent, runID: run.id, childSessionID: childA, round: 1, requirementIDs: ["r1"] })
+          .pipe(Effect.flip),
+      ).toBeInstanceOf(ResearchRun.InvalidTransitionError)
+
+      yield* research.startStage({ sessionID: parent, runID: run.id, stage: "plan", role: "planner", route: ["test/model"] })
+      expect(
+        yield* research
+          .startSubcollection({ sessionID: parent, runID: run.id, childSessionID: childA, round: 1, requirementIDs: ["r1"] })
+          .pipe(Effect.flip),
+      ).toBeInstanceOf(ResearchRun.InvalidTransitionError)
+
+      const planMessage = SessionMessage.ID.make("msg_fanout_plan")
+      const planTurn = ResearchRun.TurnID.make("turn_fanoutplan")
+      yield* research.startAttempt({ sessionID: parent, runID: run.id, stage: "plan", role: "planner", turnID: planTurn, entry: "test/model", attempt: 1 })
+      yield* research.settleAttempt({
+        sessionID: parent,
+        runID: run.id,
+        stage: "plan",
+        role: "planner",
+        turnID: planTurn,
+        entry: "test/model",
+        attempt: 1,
+        outcome: "succeeded",
+        replaySafe: false,
+        messageID: planMessage,
+      })
+      yield* research.completeStage({ sessionID: parent, runID: run.id, stage: "plan", messageID: planMessage })
+      yield* research.startStage({ sessionID: parent, runID: run.id, stage: "collect", role: "collector", route: ["test/model"] })
+      yield* research.startSubcollection({ sessionID: parent, runID: run.id, childSessionID: childA, round: 1, requirementIDs: ["r1", "r3"] })
+      yield* research.startSubcollection({ sessionID: parent, runID: run.id, childSessionID: childB, round: 1, requirementIDs: ["r2"] })
+
+      // The same child cannot be enlisted twice, so a bucket has exactly one collector.
+      expect(
+        yield* research
+          .startSubcollection({ sessionID: parent, runID: run.id, childSessionID: childA, round: 1, requirementIDs: ["r4"] })
+          .pipe(Effect.flip),
+      ).toBeInstanceOf(ResearchRun.InvalidTransitionError)
+
+      const split = (yield* research.current(parent))!
+      expect(split.subcollections).toEqual([
+        { sessionID: childA, round: 1, requirementIDs: ["r1", "r3"], status: "active", outcome: undefined },
+        { sessionID: childB, round: 1, requirementIDs: ["r2"], status: "active", outcome: undefined },
+      ])
+      // A named child borrows the collect stage, but with no attempts: it records nothing of its own.
+      expect(ResearchRun.subcollectionStage(split, childA)).toMatchObject({
+        stage: "collect",
+        status: "active",
+        attempts: [],
+      })
+      expect(ResearchRun.subcollectionStage(split, stranger)).toBeUndefined()
+
+      // Settling withdraws the authority whether the child gathered anything or not.
+      yield* research.settleSubcollection({ sessionID: parent, runID: run.id, childSessionID: childA, outcome: "succeeded" })
+      yield* research.settleSubcollection({ sessionID: parent, runID: run.id, childSessionID: childB, outcome: "failed" })
+      expect(
+        yield* research
+          .settleSubcollection({ sessionID: parent, runID: run.id, childSessionID: childA, outcome: "succeeded" })
+          .pipe(Effect.flip),
+      ).toBeInstanceOf(ResearchRun.InvalidTransitionError)
+
+      const settled = (yield* research.current(parent))!
+      expect(settled.subcollections.map((item) => [item.status, item.outcome])).toEqual([
+        ["settled", "succeeded"],
+        ["settled", "failed"],
+      ])
+      expect(ResearchRun.subcollectionStage(settled, childA)).toBeUndefined()
+      expect(ResearchRun.subcollectionStage(settled, childB)).toBeUndefined()
+    }),
+  )
 })
+

@@ -9,8 +9,20 @@ describe("public event manifest", () => {
     expect(EventManifest.Definitions).toBe(SchemaEventManifest.Definitions)
     expect(EventManifest.Latest).toBe(SchemaEventManifest.Latest)
     expect(EventManifest.Durable).toBe(SchemaEventManifest.Durable)
-    expect(EventManifest.Latest.size).toBe(95)
+    expect(EventManifest.Latest.size).toBe(101)
     expect(EventManifest.Latest.get("session.next.step.ended")).toBe(SessionEvent.Step.Ended)
+    expect(EventManifest.Latest.get("session.next.research.evidence.recorded")).toBe(
+      SessionEvent.Research.EvidenceRecorded,
+    )
+    expect(EventManifest.Latest.get("session.next.research.plan.recorded")).toBe(SessionEvent.Research.PlanRecorded)
+    expect(EventManifest.Latest.get("session.next.research.stage.reopened")).toBe(SessionEvent.Research.StageReopened)
+    expect(EventManifest.Latest.get("session.next.research.resumed")).toBe(SessionEvent.Research.Resumed)
+    expect(EventManifest.Latest.get("session.next.research.subcollection.started")).toBe(
+      SessionEvent.Research.SubcollectionStarted,
+    )
+    expect(EventManifest.Latest.get("session.next.research.subcollection.settled")).toBe(
+      SessionEvent.Research.SubcollectionSettled,
+    )
     expect(EventManifest.Latest.get("todo.updated")).toBe(Todo.Event.Updated)
     expect(EventManifest.Latest.has("ide.installed")).toBe(false)
     expect(EventManifest.Latest.has("server.connected")).toBe(true)

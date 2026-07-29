@@ -10,12 +10,53 @@ describe("opencode research (subprocess)", () => {
     ({ home, llm, opencode }) =>
       Effect.gen(function* () {
         const canary = `resagent-secret-${crypto.randomUUID()}`
-        yield* llm.text("Plan")
-        yield* llm.text("Evidence")
-        yield* llm.text("Analysis")
-        yield* llm.text("Verification")
-        yield* llm.text("<｜｜DSML｜｜tool_calls>listdir</｜｜DSML｜｜tool_calls>")
-        yield* llm.text("# Final report\n\nVerified conclusion.")
+        // A stage finishes only by settling its own submission tool, and the session replays its
+        // whole history on every request, so each reply is matched on the stage prompt that opened
+        // the turn rather than queued positionally.
+        const atStage = (stage: string) => (hit: { body: unknown }) =>
+          JSON.stringify(hit.body).includes(`[ResAgent research stage: ${stage}]`)
+        yield* llm.toolMatch(atStage("plan"), "research_plan", {
+          stage: "plan",
+          subquestions: [{ id: "sq1", question: "What is the result?" }],
+          requirements: [
+            {
+              id: "r1",
+              subquestion_id: "sq1",
+              description: "A stated result",
+              source_kinds: ["file"],
+              acceptance: "A document stating the result",
+            },
+          ],
+        })
+        yield* llm.toolMatch(atStage("collect"), "research_collect", {
+          stage: "collect",
+          summary: "Evidence",
+          coverage: [{ requirement_id: "r1", status: "unmet", sources: [], note: "No source was reachable" }],
+        })
+        yield* llm.toolMatch(atStage("analyze"), "research_analyze", {
+          stage: "analyze",
+          findings: [{ claim: "Nothing supports a result yet", evidence_ids: [], confidence: "low" }],
+          conflicts: [],
+          gaps: [{ requirement_id: "r1", what_is_missing: "Any source", suggested_action: "Read a document" }],
+        })
+        yield* llm.toolMatch(atStage("verify"), "research_verify", {
+          stage: "verify",
+          assessments: [
+            {
+              claim: "Nothing supports a result yet",
+              verdict: "unsupported",
+              rationale: "The run collected no evidence",
+              evidence_ids: [],
+            },
+          ],
+          gaps: [],
+        })
+        yield* llm.toolMatch(atStage("report"), "research_report", {
+          stage: "report",
+          markdown: "# Final report\n\nVerified conclusion.",
+          citations: [],
+          limitations: ["No source was reachable"],
+        })
         const provider = testProviderConfig(llm.url)
         const config = {
           ...provider,
@@ -56,6 +97,7 @@ describe("opencode research (subprocess)", () => {
         )
         expect(report).toContain("Verified conclusion.")
         expect(report).toContain("- Profile: `balanced`")
+        expect(report).toContain("- `r1` (analyze): Any source → Read a document")
         expect(report).not.toContain(canary)
       }),
     90_000,

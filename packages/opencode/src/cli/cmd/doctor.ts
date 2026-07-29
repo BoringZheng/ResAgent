@@ -10,6 +10,7 @@ import { LocationServiceMap } from "@opencode-ai/core/location-services"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { Remote } from "@opencode-ai/core/remote"
+import { ResearchBudget } from "@opencode-ai/core/research-budget"
 import { ResearchRoute } from "@opencode-ai/core/research-route"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { which } from "@opencode-ai/core/util/which"
@@ -74,6 +75,22 @@ export const DoctorCommand = effectCmd({
             )
           }
         }
+
+        // A ceiling that is too low fails a run halfway rather than declining it, so the resolved
+        // numbers are stated here instead of only being discoverable from a run that stopped.
+        const limits = (yield* ResearchBudget.Service).limits
+        result.push({
+          status: limits.maxToolCallsPerStage >= 4 && limits.maxCost > 0 ? "ok" : "warn",
+          label: "research budget",
+          detail: [
+            `cost=${limits.maxCost}`,
+            `tokens=${limits.maxTokens}`,
+            `steps/stage=${limits.maxToolCallsPerStage}`,
+            `recollect=${limits.maxRecollectRounds}`,
+            `rechecks=${limits.maxRechecks}`,
+            `parallel=${limits.maxParallelCollectors}`,
+          ].join(", "),
+        })
 
         const ssh = which("ssh")
         const version = ssh

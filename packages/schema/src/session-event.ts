@@ -526,6 +526,75 @@ export namespace Research {
   })
   export type StageCompleted = typeof StageCompleted.Type
 
+  export const EvidenceID = Schema.String.check(Schema.isPattern(/^ev_[A-Za-z0-9]+$/))
+
+  export const EvidenceSource = Schema.Union(
+    [
+      Schema.Struct({ kind: Schema.Literal("web"), url: Schema.String, title: Schema.String.pipe(optional) }),
+      Schema.Struct({ kind: Schema.Literal("file"), path: Schema.String }),
+      Schema.Struct({ kind: Schema.Literal("search"), query: Schema.String }),
+      Schema.Struct({
+        kind: Schema.Literal("remote"),
+        alias: Schema.String,
+        command: Schema.String,
+        exit: Schema.Int.pipe(optional),
+      }),
+    ],
+    { mode: "oneOf" },
+  ).pipe(Schema.toTaggedUnion("kind"))
+  export type EvidenceSource = typeof EvidenceSource.Type
+
+  // Evidence is harvested from durable tool parts rather than declared by the model, so a
+  // recorded row always identifies the exact tool call it came from.
+  export const EvidenceRecorded = Event.define({
+    type: "session.next.research.evidence.recorded",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      stage: Stage,
+      evidenceID: EvidenceID,
+      collectedSessionID: SessionID,
+      messageID: SessionMessage.ID,
+      toolCallID: Schema.String,
+      tool: Schema.String,
+      source: EvidenceSource,
+      excerpt: Schema.String,
+      digest: Schema.String,
+      truncated: Schema.Boolean,
+      supersedes: EvidenceID.pipe(optional),
+    },
+  })
+  export type EvidenceRecorded = typeof EvidenceRecorded.Type
+
+  // The plan is recorded separately from message history so later stages survive compaction.
+  export const PlanRecorded = Event.define({
+    type: "session.next.research.plan.recorded",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      messageID: SessionMessage.ID,
+      plan: Schema.Record(Schema.String, Schema.Unknown),
+    },
+  })
+  export type PlanRecorded = typeof PlanRecorded.Type
+
+  // A completed stage is reopened, never restarted, so `StageStarted`'s once-per-stage rule keeps
+  // its meaning and an event stream that predates this type folds exactly as it did before.
+  export const StageReopened = Event.define({
+    type: "session.next.research.stage.reopened",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      stage: Stage,
+      round: PositiveInt,
+      reason: Schema.String,
+    },
+  })
+  export type StageReopened = typeof StageReopened.Type
+
   export const Completed = Event.define({
     type: "session.next.research.completed",
     ...options,
@@ -548,14 +617,62 @@ export namespace Research {
   })
   export type Failed = typeof Failed.Type
 
+  // A failed run is resumed, never restarted: the completed stages, the recorded plan, and the
+  // evidence index all stand, so the run picks up at the stage that did not finish.
+  export const Resumed = Event.define({
+    type: "session.next.research.resumed",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      fromStage: Stage,
+    },
+  })
+  export type Resumed = typeof Resumed.Type
+
+  // Collection may be split across child sessions. The child does the gathering, but the parent's
+  // stream is the run's only ledger: this event is what grants a child the collect stage's tools,
+  // so setting `parentID` alone cannot buy a session research authority.
+  export const SubcollectionStarted = Event.define({
+    type: "session.next.research.subcollection.started",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      round: PositiveInt,
+      childSessionID: SessionID,
+      requirementIDs: Schema.Array(Schema.String),
+    },
+  })
+  export type SubcollectionStarted = typeof SubcollectionStarted.Type
+
+  // Settling withdraws the borrowed authority whether the child gathered anything or not.
+  export const SubcollectionSettled = Event.define({
+    type: "session.next.research.subcollection.settled",
+    ...options,
+    schema: {
+      ...Base,
+      runID: RunID,
+      childSessionID: SessionID,
+      outcome: Schema.Literals(["succeeded", "failed"]),
+    },
+  })
+  export type SubcollectionSettled = typeof SubcollectionSettled.Type
+
   export const DurableDefinitions = Event.inventory(
     Started,
     StageStarted,
     ProviderAttempted,
     ProviderAttemptSettled,
     StageCompleted,
+    EvidenceRecorded,
+    PlanRecorded,
+    StageReopened,
     Completed,
     Failed,
+    Resumed,
+    SubcollectionStarted,
+    SubcollectionSettled,
   )
   export const Durable = Schema.Union(DurableDefinitions, { mode: "oneOf" }).pipe(Schema.toTaggedUnion("type"))
   export type DurableEvent = typeof Durable.Type

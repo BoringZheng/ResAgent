@@ -82,6 +82,8 @@ type CreateInput = {
   agent?: AgentV2.ID
   model?: ModelV2.Ref
   location: Location.Ref
+  /** The session this one works for. Set by parallel research collection; the row and index exist. */
+  parentID?: SessionSchema.ID
 }
 
 type CompactInput = {
@@ -244,6 +246,7 @@ const layer = Layer.effect(
           version: InstallationVersion,
           projectID: project.id,
           directory: input.location.directory,
+          parentID: input.parentID,
           path: path.relative(project.directory, input.location.directory).replaceAll("\\", "/"),
           workspaceID: input.location.workspaceID ? WorkspaceV2.ID.make(input.location.workspaceID) : undefined,
           title: `New session - ${new Date(now).toISOString()}`,

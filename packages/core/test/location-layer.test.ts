@@ -36,6 +36,30 @@ const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node])),
 )
 
+/** Every tool the registry holds when no location config adds or removes one. */
+const registered = [
+  "application_context",
+  "apply_patch",
+  "bash",
+  "edit",
+  "glob",
+  "grep",
+  "question",
+  "read",
+  "research_analyze",
+  "research_collect",
+  "research_evidence",
+  "research_plan",
+  "research_recheck",
+  "research_report",
+  "research_verify",
+  "skill",
+  "todowrite",
+  "webfetch",
+  "websearch",
+  "write",
+]
+
 describe("LocationServiceMap", () => {
   it.live("reuses cached services for constructed and decoded location refs", () =>
     Effect.acquireRelease(
@@ -103,38 +127,12 @@ describe("LocationServiceMap", () => {
 
           const blockedState = yield* update(blocked.path)
           expect(blockedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(false)
-          expect(blockedState.tools.map((tool) => tool.name).sort()).toEqual([
-            "application_context",
-            "apply_patch",
-            "bash",
-            "edit",
-            "glob",
-            "grep",
-            "question",
-            "read",
-            "skill",
-            "todowrite",
-            "webfetch",
-            "websearch",
-            "write",
-          ])
+          // The research tools register globally and are gated by permission, not by registration:
+          // the session runner denies `research_*` for every session without an active stage.
+          expect(blockedState.tools.map((tool) => tool.name).sort()).toEqual(registered)
           const allowedState = yield* update(allowed.path)
           expect(allowedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(true)
-          expect(allowedState.tools.map((tool) => tool.name).sort()).toEqual([
-            "application_context",
-            "apply_patch",
-            "bash",
-            "edit",
-            "glob",
-            "grep",
-            "question",
-            "read",
-            "skill",
-            "todowrite",
-            "webfetch",
-            "websearch",
-            "write",
-          ])
+          expect(allowedState.tools.map((tool) => tool.name).sort()).toEqual(registered)
         }),
       ),
     ),

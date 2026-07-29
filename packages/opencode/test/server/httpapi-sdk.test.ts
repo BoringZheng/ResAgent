@@ -181,6 +181,64 @@ function statuses(input: Record<string, Captured>) {
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, value.status]))
 }
 
+/**
+ * A research stage finishes only by settling its own submission tool, and the runner stops stepping
+ * once it has, so one queued reply per stage lines up with one provider request per stage. The
+ * fixture retrieves nothing, so coverage is `unmet` and no stage cites an evidence identifier.
+ */
+const researchStage = {
+  plan: {
+    stage: "plan",
+    subquestions: [{ id: "sq1", question: "What does the evidence show?" }],
+    requirements: [
+      {
+        id: "r1",
+        subquestion_id: "sq1",
+        description: "A stated measurement",
+        source_kinds: ["web"],
+        acceptance: "A retrievable source stating the value",
+      },
+    ],
+  },
+  collect: (summary: string) => ({
+    stage: "collect",
+    summary,
+    coverage: [{ requirement_id: "r1", status: "unmet", sources: [], note: "The fixture retrieved no source" }],
+  }),
+  analyze: (claim: string) => ({
+    stage: "analyze",
+    findings: [{ claim, evidence_ids: [], confidence: "low" }],
+    conflicts: [],
+    gaps: [],
+  }),
+  verify: (claim: string) => ({
+    stage: "verify",
+    assessments: [
+      { claim, verdict: "unsupported", rationale: "The fixture collected no evidence", evidence_ids: [] },
+    ],
+    gaps: [],
+  }),
+  report: (markdown: string) => ({ stage: "report", markdown, citations: [], limitations: [] }),
+}
+
+function queueResearch(
+  llm: TestLLMServer["Service"],
+  input: {
+    readonly collected?: string
+    readonly analyzed?: string
+    readonly verified?: string
+    readonly markdown: string
+  },
+) {
+  return Effect.gen(function* () {
+    yield* llm.tool("research_plan", researchStage.plan)
+    yield* llm.tool("research_collect", researchStage.collect(input.collected ?? "Evidence"))
+    yield* llm.tool("research_analyze", researchStage.analyze(input.analyzed ?? "Analysis"))
+    yield* llm.tool("research_verify", researchStage.verify(input.verified ?? "Verification"))
+    yield* llm.tool("research_report", researchStage.report(input.markdown))
+  })
+}
+
 function firstPartText(value: unknown) {
   return record(array(record(value).parts)[0]).text
 }
@@ -882,12 +940,8 @@ describe("HttpApi SDK", () => {
     "runs the five-stage research workflow through the generated SDK",
     Effect.gen(function* () {
       const llm = yield* TestLLMServer
-      yield* llm.text("Plan")
-      yield* llm.text("Evidence")
-      yield* llm.text("Analysis")
-      yield* llm.text("Verification")
-      yield* llm.text(
-        [
+      yield* queueResearch(llm, {
+        markdown: [
           "# HTTP report",
           "",
           "## Conclusion",
@@ -906,7 +960,7 @@ describe("HttpApi SDK", () => {
           "",
           "1. https://fixture.invalid/evidence",
         ].join("\n"),
-      )
+      })
       return yield* withProject(
         "raw",
         {
@@ -953,19 +1007,199 @@ describe("HttpApi SDK", () => {
   )
 
   httpapi(
+    "reopens collection once when analysis reports an unmet requirement",
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      yield* llm.tool("research_plan", researchStage.plan)
+      yield* llm.tool("research_collect", researchStage.collect("First pass"))
+      yield* llm.tool("research_analyze", {
+        ...researchStage.analyze("Analysis"),
+        gaps: [
+          {
+            requirement_id: "r1",
+            what_is_missing: "A stated measurement",
+            suggested_action: "Retrieve the vendor page",
+          },
+        ],
+      })
+      // The reopened round: collection runs again, then the stage that raised the gap.
+      yield* llm.tool("research_collect", researchStage.collect("Second pass"))
+      yield* llm.tool("research_analyze", researchStage.analyze("Analysis after the gap closed"))
+      yield* llm.tool("research_verify", researchStage.verify("Verification"))
+      yield* llm.tool(
+        "research_report",
+        researchStage.report(["# Loop-back report", "", "The gap closed on the second pass."].join("\n")),
+      )
+      return yield* withProject(
+        "raw",
+        {
+          config: {
+            ...testProviderConfig(llm.url),
+            research: {
+              default_profile: "balanced",
+              profiles: {
+                balanced: {
+                  planner: ["test/test-model"],
+                  collector: ["test/test-model"],
+                  analyst: ["test/test-model"],
+                  verifier: ["test/test-model"],
+                  writer: ["test/test-model"],
+                },
+              },
+            },
+          },
+        },
+        ({ sdk, directory }) =>
+          Effect.gen(function* () {
+            const session = yield* capture(() => sdk.v2.session.create({ location: { directory } }))
+            const sessionID = String(record(record(session.data).data).id)
+            const research = yield* capture(() =>
+              sdk.v2.session.research({
+                sessionID,
+                question: "Close the reported gap",
+                profile: "balanced",
+                path: ".resagent/reports/loopback.md",
+              }),
+            )
+            const reportPath = String(record(record(research.data).data).reportPath)
+            const report = yield* Effect.promise(() => Bun.file(path.join(directory, reportPath)).text())
+
+            expect(research.status).toBe(200)
+            expect(report).toContain("The gap closed on the second pass.")
+            expect(report).toContain("- Rounds:")
+            expect(report).toContain("- 2: analyze reported 1 unmet requirement")
+            // The rerun replaced the analysis that raised the gap, so nothing is left unmet.
+            expect(report).not.toContain("## Unmet requirements")
+          }),
+      )
+    }).pipe(Effect.provide(TestLLMServer.layer)),
+  )
+
+  httpapi(
+    "splits the first collection round across child sessions and files their evidence on the parent run",
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      // Two buckets run concurrently, so request order is not fixed: each reply is matched on the
+      // prompt that opened its turn rather than queued positionally.
+      const contains = (needle: string) => (hit: { body: unknown }) => JSON.stringify(hit.body).includes(needle)
+      // Every collector is shown the whole plan, so a bucket is identified by the fenced assignment
+      // that follows the heading rather than by the requirement appearing in the prompt at all.
+      const assigned = (mine: string) => (hit: { body: unknown }) => {
+        const body = JSON.stringify(hit.body)
+        const open = body.indexOf("```json", body.indexOf("Requirements assigned to you"))
+        const close = body.indexOf("```", open + 7)
+        return open > 6 && close > 0 && body.slice(open, close).includes(mine)
+      }
+      yield* llm.toolMatch(contains("[ResAgent research stage: plan]"), "research_plan", {
+        stage: "plan",
+        subquestions: [{ id: "sq1", question: "What does the evidence show?" }],
+        requirements: [
+          {
+            id: "r1",
+            subquestion_id: "sq1",
+            description: "A stated measurement",
+            source_kinds: ["web"],
+            acceptance: "A retrievable source stating the value",
+          },
+          {
+            id: "r2",
+            subquestion_id: "sq1",
+            description: "A stated method",
+            source_kinds: ["web"],
+            acceptance: "A retrievable source stating the method",
+          },
+        ],
+      })
+      // One reply per child, each scoped to the single requirement its bucket was dealt.
+      yield* llm.toolMatch(assigned("A stated measurement"), "research_collect", {
+        stage: "collect",
+        summary: "The first collector covered r1",
+        coverage: [{ requirement_id: "r1", status: "unmet", sources: [], note: "The fixture retrieved no source" }],
+      })
+      yield* llm.toolMatch(assigned("A stated method"), "research_collect", {
+        stage: "collect",
+        summary: "The second collector covered r2",
+        coverage: [{ requirement_id: "r2", status: "unmet", sources: [], note: "The fixture retrieved no source" }],
+      })
+      // The parent's own collect turn sees what came back and submits the merged coverage.
+      yield* llm.toolMatch(contains("What your subcollectors reported"), "research_collect", {
+        stage: "collect",
+        summary: "Merged from two subcollectors",
+        coverage: [
+          { requirement_id: "r1", status: "unmet", sources: [], note: "The fixture retrieved no source" },
+          { requirement_id: "r2", status: "unmet", sources: [], note: "The fixture retrieved no source" },
+        ],
+      })
+      yield* llm.toolMatch(contains("[ResAgent research stage: analyze]"), "research_analyze", researchStage.analyze("Analysis"))
+      yield* llm.toolMatch(contains("[ResAgent research stage: verify]"), "research_verify", researchStage.verify("Verification"))
+      yield* llm.toolMatch(
+        contains("[ResAgent research stage: report]"),
+        "research_report",
+        researchStage.report(["# Split collection", "", "Both buckets reported back."].join("\n")),
+      )
+      return yield* withProject(
+        "raw",
+        {
+          config: {
+            ...testProviderConfig(llm.url),
+            research: {
+              default_profile: "balanced",
+              budget: { max_parallel_collectors: 2 },
+              profiles: {
+                balanced: {
+                  planner: ["test/test-model"],
+                  collector: ["test/test-model"],
+                  analyst: ["test/test-model"],
+                  verifier: ["test/test-model"],
+                  writer: ["test/test-model"],
+                },
+              },
+            },
+          },
+        },
+        ({ sdk, directory }) =>
+          Effect.gen(function* () {
+            const session = yield* capture(() => sdk.v2.session.create({ location: { directory } }))
+            const sessionID = String(record(record(session.data).data).id)
+            const research = yield* capture(() =>
+              sdk.v2.session.research({
+                sessionID,
+                question: "Split the collection",
+                profile: "balanced",
+                path: ".resagent/reports/split.md",
+              }),
+            )
+            const reportPath = String(record(record(research.data).data).reportPath)
+            const report = yield* Effect.promise(() => Bun.file(path.join(directory, reportPath)).text())
+
+            expect(research.status).toBe(200)
+            expect(report).toContain("Both buckets reported back.")
+            // The split is stated in provenance, one line per child, each naming its bucket.
+            expect(report).toContain("- Subcollections:")
+            expect(report.match(/^ {2}- `ses_\w+` \(round 1, succeeded\): r\d$/gm)).toHaveLength(2)
+            // The children have no runs of their own: every subcollection event is on the parent.
+            const history = yield* capture(() => sdk.v2.session.history({ sessionID, after: 0, limit: 100 }))
+            const started = researchEvents(history, "session.next.research.subcollection.started")
+            const settled = researchEvents(history, "session.next.research.subcollection.settled")
+            expect(started.map((event) => event.sessionID)).toEqual([sessionID, sessionID])
+            expect(started.flatMap((event) => array(event.requirementIDs)).sort()).toEqual(["r1", "r2"])
+            expect(settled.map((event) => event.outcome)).toEqual(["succeeded", "succeeded"])
+          }),
+      )
+    }).pipe(Effect.provide(TestLLMServer.layer)),
+  )
+
+  httpapi(
     "carries conflicting evidence through verification into a qualified report",
     Effect.gen(function* () {
       const llm = yield* TestLLMServer
-      yield* llm.text("Compare the two independently supplied measurements.")
-      yield* llm.text(
-        "Source A reports 10 units at https://fixture.invalid/source-a. Source B reports 12 units at https://fixture.invalid/source-b.",
-      )
-      yield* llm.text("The measurements conflict by 2 units and cannot be normalized to one uncontested value.")
-      yield* llm.text(
-        "Source B is newer, but the collection does not establish that its method is more reliable. The conflict remains material.",
-      )
-      yield* llm.text(
-        [
+      yield* queueResearch(llm, {
+        collected:
+          "Source A reports 10 units at https://fixture.invalid/source-a. Source B reports 12 units at https://fixture.invalid/source-b.",
+        analyzed: "The measurements conflict by 2 units and cannot be normalized to one uncontested value.",
+        verified:
+          "Source B is newer, but the collection does not establish that its method is more reliable. The conflict remains material.",
+        markdown: [
           "# Conflicting measurements",
           "",
           "## Conclusion",
@@ -985,7 +1219,7 @@ describe("HttpApi SDK", () => {
           "1. https://fixture.invalid/source-a",
           "2. https://fixture.invalid/source-b",
         ].join("\n"),
-      )
+      })
       return yield* withProject(
         "raw",
         {
@@ -1041,11 +1275,7 @@ describe("HttpApi SDK", () => {
     "uses the first research provider when it succeeds",
     withResearchLlms(({ sdk, directory, primary, backup }) =>
       Effect.gen(function* () {
-        yield* primary.text("Plan")
-        yield* primary.text("Evidence")
-        yield* primary.text("Analysis")
-        yield* primary.text("Verification")
-        yield* primary.text("# Primary report")
+        yield* queueResearch(primary, { markdown: "# Primary report" })
         const session = yield* capture(() =>
           sdk.v2.session.create({
             location: { directory },
@@ -1079,11 +1309,11 @@ describe("HttpApi SDK", () => {
         yield* primary.error(503, { error: { message: "temporarily unavailable" } })
         yield* primary.error(503, { error: { message: "temporarily unavailable" } })
         yield* primary.error(503, { error: { message: "temporarily unavailable" } })
-        yield* backup.text("Backup plan")
-        yield* primary.text("Evidence")
-        yield* primary.text("Analysis")
-        yield* primary.text("Verification")
-        yield* primary.text("# Fallback report")
+        yield* backup.tool("research_plan", researchStage.plan)
+        yield* primary.tool("research_collect", researchStage.collect("Evidence"))
+        yield* primary.tool("research_analyze", researchStage.analyze("Analysis"))
+        yield* primary.tool("research_verify", researchStage.verify("Verification"))
+        yield* primary.tool("research_report", researchStage.report("# Fallback report"))
         const session = yield* capture(() => sdk.v2.session.create({ location: { directory } }))
         const sessionID = String(record(record(session.data).data).id)
         const research = yield* capture(() =>
