@@ -159,7 +159,9 @@ export function fromSettled(settled: Settled): ReadonlyArray<Candidate> {
   }
   if (tool === "read") {
     const path = text(settled.input["path"])
-    const body = modelText(settled)
+    // `read` hands the model its text through the structured result rather than through content
+    // parts, so harvesting the content parts alone would record the call and none of the file.
+    const body = text(structured["content"]) ?? modelText(settled)
     if (!path || !body.trim()) return []
     return [make(toolCallID, tool, { kind: "file", path }, body, false)]
   }

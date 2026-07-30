@@ -44,7 +44,7 @@ describe("ResearchEvidence.harvest", () => {
       message([
         call("c1", "webfetch", { input: { url: "https://example.test/a" }, structured: { output: "Page body" } }),
         call("c2", "websearch", { input: { query: "throughput" }, structured: { text: "Result list" } }),
-        call("c3", "read", { input: { path: "src/a.ts" }, content: [{ type: "text", text: "file body" }] }),
+        call("c3", "read", { input: { path: "src/a.ts" }, structured: { content: "file body" } }),
         call("c4", "remote_run", {
           input: { command: "uname -a" },
           structured: { command: "uname -a", results: [{ host: "lab-a", status: "ok", exit: 0, stdout: "Linux" }] },
@@ -87,7 +87,7 @@ describe("ResearchEvidence.harvest", () => {
         message([
           call("c1", "grep", { input: { pattern: "x" }, content: [{ type: "text", text: "a.ts:1" }] }),
           call("c2", "glob", { input: { pattern: "*.ts" } }),
-          call("c3", "read", { input: { path: "empty.ts" }, content: [{ type: "text", text: "   " }] }),
+          call("c3", "read", { input: { path: "empty.ts" }, structured: { content: "   " } }),
           call("c4", "webfetch", { structured: { output: "body without a url" } }),
         ]),
       ),
