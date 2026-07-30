@@ -336,6 +336,21 @@ export interface Usage {
   readonly tokens: number
 }
 
+/**
+ * Why the stage's own submission tool refused the last call it was given, if it refused one. The
+ * message is the tool's own validation error, so it names the field rather than the symptom.
+ */
+export function rejection(stage: ResearchRun.Stage, messages: ReadonlyArray<SessionMessage.Assistant>) {
+  const refused = messages
+    .flatMap((message) => message.content)
+    .findLast(
+      (part) =>
+        part.type === "tool" && part.name === ResearchStageTool.stageTools[stage] && part.state.status === "error",
+    )
+  if (refused?.type !== "tool" || refused.state.status !== "error") return undefined
+  return refused.state.error.message
+}
+
 export interface Spend {
   readonly total: Usage
   readonly byStage: ReadonlyMap<ResearchRun.Stage, Usage>
@@ -742,6 +757,13 @@ const layer = Layer.effect(
             ) {
               const previous = outputs.find((entry) => entry.stage === item.stage)?.result
               let output: StageOutput | undefined
+              /**
+               * Why the last submission was refused. A stage round is short, so a turn that spends
+               * its steps discovering the schema one rejected field at a time has none left to
+               * submit. The correction turn is told exactly what was wrong instead of being told
+               * only that something was.
+               */
+              let refusal: string | undefined
               for (const correction of [false, true]) {
                 const before = yield* latest(input.sessionID)
                 const state = (yield* research.current(input.sessionID))!
@@ -758,7 +780,7 @@ const layer = Layer.effect(
                   sessionID: input.sessionID,
                   prompt: Prompt.make({
                     text: correction
-                      ? `${stated}\n\nThe previous turn ended without a settled \`${ResearchStageTool.stageTools[item.stage]}\` call, so the stage is unfinished. Call it now.`
+                      ? `${stated}\n\nThe previous turn ended without a settled \`${ResearchStageTool.stageTools[item.stage]}\` call, so the stage is unfinished.${refusal ? ` Its last attempt was rejected: ${refusal}` : ""} Call it now, correctly, as the first thing you do.`
                       : stated,
                   }),
                   resume: false,
@@ -785,6 +807,7 @@ const layer = Layer.effect(
                   output = { stage: item.stage, result: result.value, messages: produced }
                   break
                 }
+                refusal = rejection(item.stage, produced)
               }
               if (!output)
                 return yield* new StageFailedError({
