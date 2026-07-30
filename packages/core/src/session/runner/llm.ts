@@ -280,9 +280,14 @@ const layer = Layer.effect(
           system: [agent.info?.system, system.baseline]
             .filter((part): part is string => part !== undefined && part.length > 0)
             .map(SystemPart.make),
-          messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
+          // The nudge is an instruction, and it travels as one. Sent as an assistant prefill it is
+          // the same words, but a request that ends on an assistant turn is one a provider is
+          // entitled to reject, and OpenAI-compatible gateways do.
+          messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.user(MAX_STEPS_PROMPT)] : [])],
           tools: toolMaterialization?.definitions ?? [],
-          toolChoice: isLastStep ? "none" : undefined,
+          // A tool choice without tools is what a provider is entitled to reject, and some do. The
+          // last step already carries no tools, so saying "none" as well states nothing.
+          toolChoice: isLastStep && toolMaterialization?.definitions.length ? "none" : undefined,
         })
         if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
           return yield* Effect.die(continueAfterCompaction(currentStep))

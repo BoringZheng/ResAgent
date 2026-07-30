@@ -3024,10 +3024,12 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests).toHaveLength(2)
       expect(requests[0]?.toolChoice).toBeUndefined()
-      expect(requests[1]?.toolChoice).toMatchObject({ type: "none" })
+      // No tools, so no tool choice: a choice without tools is a request some providers reject.
       expect(requests[1]?.tools).toEqual([])
+      expect(requests[1]?.toolChoice).toBeUndefined()
+      // The nudge is an instruction, so it ends the request on a user turn rather than a prefill.
       expect(requests[1]?.messages.at(-1)).toMatchObject({
-        role: "assistant",
+        role: "user",
         content: [{ type: "text", text: expect.stringContaining("MAXIMUM STEPS REACHED") }],
       })
       expect(executions).toEqual(["done"])
@@ -3086,7 +3088,8 @@ describe("SessionRunnerLLM", () => {
       expect(requests).toHaveLength(3)
       expect(requests[1]?.toolChoice).toBeUndefined()
       expect(requests[1]?.tools).not.toEqual([])
-      expect(requests[2]?.toolChoice).toMatchObject({ type: "none" })
+      expect(requests[2]?.tools).toEqual([])
+      expect(requests[2]?.toolChoice).toBeUndefined()
       expect(executions).toEqual(["before", "after"])
     }),
   )
@@ -3379,9 +3382,9 @@ describe("SessionRunnerLLM", () => {
       expect(requests[0]?.tools.map((tool) => tool.name)).toEqual(["echo", "defect"])
       expect(requests[4]?.toolChoice).toBeUndefined()
       expect(requests[5]?.tools).toEqual([])
-      expect(requests[5]?.toolChoice).toMatchObject({ type: "none" })
+      expect(requests[5]?.toolChoice).toBeUndefined()
       expect(requests[5]?.messages.at(-1)).toMatchObject({
-        role: "assistant",
+        role: "user",
         content: [{ type: "text", text: expect.stringContaining("MAXIMUM STEPS REACHED") }],
       })
       expect(executions).toEqual(["evidence-0", "evidence-1", "evidence-2", "evidence-3", "evidence-4"])
